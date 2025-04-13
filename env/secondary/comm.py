@@ -32,6 +32,10 @@ class CommunicationModule:
         aggregated_comm = normalized_weights @ voltage_errors  # Shape: (N,)
         return aggregated_comm
 
+    def get_neighbor_voltages(self, agent_id, states, adjacency_matrix):
+        neighbors = np.where(adjacency_matrix[agent_id] > 0)[0]
+        return [states[n]["voltage"] for n in neighbors]
+
 
 # --- Testing the updated Communication Module ---
 if __name__ == "__main__":
