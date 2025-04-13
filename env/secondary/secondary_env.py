@@ -1,5 +1,6 @@
 import numpy as np
 from env.secondary.comm import CommunicationModule
+from env.secondary.inverter import Inverter
 
 
 class SecondaryEnv:
@@ -12,6 +13,15 @@ class SecondaryEnv:
         self.noise_std = getattr(config, "secondary_noise_std", 0.002)
         self.max_steps = getattr(config, "secondary_max_steps", 200)
         self.adjacency_matrix = getattr(config, "adjacency_matrix", self.default_ring_topology(self.num_agents))
+        self.num_microgrids = getattr(config, "num_microgrids", 1)
+
+        # loop through microgrids and then num_agents to properly identify the inverter and the microgrid
+        # it belongs to
+        self.inverters = []
+        for i in range(self.num_microgrids):
+            for j in range(self.num_agents):
+                inverter = Inverter(config, j, i)
+                self.inverters.append(inverter)
 
         self.reset()
 
@@ -20,23 +30,47 @@ class SecondaryEnv:
         self.time_step = 0
         return self.states
 
+    def set_measured_voltage(self, microgrid_index, voltage):
+        for i in range(self.num_agents):
+            if self.inverters[i].mg_id == microgrid_index:
+                self.states[i]["voltage"] = voltage
+                break
+
     def step(self, actions):
         next_states = []
         rewards = []
 
         for i in range(self.num_agents):
+            inverter = self.inverters[i]
             current_state = self.states[i]
-            action = actions[i]
+            measured_voltage = current_state["voltage"]
 
-            # Voltage dynamics
-            noise = np.random.normal(0, self.noise_std)
-            new_voltage = current_state["voltage"] + self.voltage_gain * action + noise
-            new_state = {"voltage": new_voltage, "reactive_power": action}
+            # --- Consensus voltage correction ---
+            neighbor_voltages = CommunicationModule.get_neighbor_voltages(i, self.states, self.adjacency_matrix)
+            consensus_error = sum([(measured_voltage - vj) for vj in neighbor_voltages])
+
+            # --- Update voltage reference like feedback linearization ---
+            V_ref = measured_voltage * consensus_error
+
+            # --- Apply action (reactive power adjustment) ---
+            action = actions[i]
+            inverter_action_voltage = V_ref + self.voltage_gain * action
+
+            # --- Update inverter state using inverter dynamics ---
+            new_inverter_state = inverter.update(V_ref=inverter_action_voltage, measured_voltage=measured_voltage)
+            new_voltage = new_inverter_state["V"]
+
+            # --- Construct state dict ---
+            new_state = {
+                "voltage": new_voltage,
+                "reactive_power": action,
+                "i_d": new_inverter_state["i_d"],
+                "i_q": new_inverter_state["i_q"],
+                "delta": new_inverter_state["delta"]
+            }
             next_states.append(new_state)
 
-            # Voltage tracking error
-            voltage_error = new_voltage - self.V_ref
-
+            # --- Compute voltage reward zone ---
             v_i = new_voltage
             if 0.95 <= v_i <= 1.05:
                 reward = 0.05 - abs(1.0 - v_i)
@@ -45,14 +79,13 @@ class SecondaryEnv:
             else:
                 reward = -10.0
 
-            # Consensus error with neighbors
-            neighbor_voltages = CommunicationModule.get_neighbor_voltages(i, self.states, self.adjacency_matrix)
-            consensus_error = sum([(new_voltage - vj) ** 2 for vj in neighbor_voltages])
+            # Action penalty (optional)
+            reward -= self.action_penalty * abs(action)
 
-            # Reward
-            reward = - reward \
-                     - self.action_penalty * abs(action) \
-                     - self.consensus_penalty * consensus_error
+            # Consensus penalty (optional)
+            consensus_penalty = sum([(v_i - vj) ** 2 for vj in neighbor_voltages])
+            reward -= self.consensus_penalty * consensus_penalty
+
             rewards.append(reward)
 
         self.states = next_states
