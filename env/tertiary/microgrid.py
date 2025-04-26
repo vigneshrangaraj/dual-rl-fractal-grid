@@ -9,6 +9,8 @@ class MicroGrid:
         self.config = config
         self.V_ref = getattr(config, "V_ref", 1.0)
         self.num_buses = getattr(config, "num_buses", 34)
+        self.neighbors = []
+        self.switches = {}
 
         # cost params from config
         self.bess_cost_per_mwh = getattr(config, "bess_cost_per_mwh", 100.0)
@@ -22,8 +24,14 @@ class MicroGrid:
         self.storage_bus = getattr(config, "storage_bus", 10)
         self.storage_idx = self._add_storage()
 
+        self.der_max_capacity = getattr(config, "der_max_capacity", 0.0)
+
         # Add DERs (solar and wind) at specified buses
         self._add_der()
+
+    def add_neighbor(self, neighbor, switch_name):
+        self.neighbors.append(neighbor)
+        self.switches[switch_name] = 0  # Initially, all switches are open (0)
 
     def _create_ieee34_network(self):
         """
@@ -46,10 +54,10 @@ class MicroGrid:
         # Create lines and add loads at subsequent buses
         for i in range(self.num_buses - 1):
             pp.create_line(net, from_bus=bus_indices[i], to_bus=bus_indices[i + 1],
-                           length_km=0.1, std_type="NAYY 4x50 SE")
+                           length_km=0.1, std_type="NAYY 4x150 SE")
             # Add a load at each bus except the slack bus.
             pp.create_load(net, bus=bus_indices[i + 1],
-                           p_mw=0.01, q_mvar=0.005,
+                           p_mw=0.02, q_mvar=0.005,
                            name=f"Load_{i + 1}")
         return net
 
@@ -110,18 +118,68 @@ class MicroGrid:
                            q_mvar=0.0,
                            name=f"Wind_{bus}")
 
-    def apply_dispatch(self, dispatch_command):
+    def get_available_der_output(self, time_step):
         """
-        Apply a dispatch command to the storage element.
+        Simulates available solar and wind generation based on hour of the day (0-23).
+        Returns (solar_availability_factor, wind_availability_factor).
+        """
 
-        Args:
-            dispatch_command (float): Control command for the storage element.
-                                      Positive value indicates discharging (injecting power),
-                                      negative value indicates charging (consuming power).
+        # Solar Availability
+        if 6 <= time_step <= 18:
+            # Parabolic shape peaking at noon
+            solar_peak = 1.0
+            solar_availability = max(0.0, -0.01 * (time_step - 12) ** 2 + solar_peak)
+        else:
+            solar_availability = 0.0
+
+        # Wind Availability
+        np.random.seed(time_step)
+        base_wind = 0.5  # Base wind availability
+        fluctuation = np.random.uniform(-0.2, 0.2)  # +/-20% random fluctuation
+        wind_availability = np.clip(base_wind + fluctuation, 0.0, 1.0)
+
+        return solar_availability, wind_availability
+
+    def apply_dispatch(self, dispatch_command, time_step):
         """
-        # Update the storage element's active power injection in MW.
-        # For instance, if dispatch_command = -5.0 (MW), then storage charges at 5 MW.
-        self.net.storage.at[self.storage_idx, "p_mw"] = dispatch_command
+        Apply dispatch command to DERs.
+        Now calls get_available_der_output() to get realistic availability based on time of day.
+        """
+
+        # Get available generation factors
+        solar_availability, wind_availability = self.get_available_der_output(time_step)
+
+        # Update Solar
+        solar_buses = getattr(self.config, "solar_buses", [5, 10])
+        solar_base_output = getattr(self.config, "solar_base_output", 0.005)
+
+        for i, bus in enumerate(solar_buses):
+            action = dispatch_command  # 0 or 1
+            available_p_mw = solar_base_output * solar_availability
+            self.net.sgen.loc[self.net.sgen['name'] == f"Solar_{bus}", 'p_mw'] = abs(action * available_p_mw)
+
+        # Update Wind
+        wind_buses = getattr(self.config, "wind_buses", [15])
+        wind_base_output = getattr(self.config, "wind_base_output", 0.007)
+
+        for i, bus in enumerate(wind_buses):
+            action = dispatch_command  # 0 or 1
+            available_p_mw = wind_base_output * wind_availability
+            self.net.sgen.loc[self.net.sgen['name'] == f"Wind_{bus}", 'p_mw'] = abs(action * available_p_mw)
+
+        # (optional) save availability factors if needed
+        self.solar_availability = solar_availability
+        self.wind_availability = wind_availability
+
+    def apply_battery_operation(self, battery_operation):
+        """
+        Apply battery operation command to the BESS.
+        Positive value indicates discharging, negative indicates charging.
+        """
+        # Update the storage element in the network
+        self.net.storage.loc[self.storage_idx, "p_mw"] = battery_operation
+
+
 
     def update_state_from_power_flow(self, power_flow_results):
         # Here we update the storage voltage from the power flow results if available.

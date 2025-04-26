@@ -72,7 +72,7 @@ class SACAgent:
 
         # Replay buffer and training functions are omitted for brevity.
 
-    def select_action(self, state):
+    def select_action(self, state, switch_set):
         if isinstance(state, dict):
             state_tensor = helper.flatten_tertiary_state(state).unsqueeze(0).to(self.device)
         elif isinstance(state, (list, np.ndarray)):
@@ -82,13 +82,21 @@ class SACAgent:
 
         action, log_prob = self.policy(state_tensor)
         # action is of shape [1, action_dim]
-        action_dict = helper.unpack_tertiary_action(action[0])
+        action_dict = helper.unpack_tertiary_action(action[0], switch_set)
         return action_dict, log_prob.sum(1, keepdim=True), None
 
     def learn(self, state, action, log_prob, reward, next_state, done):
         state = helper.flatten_tertiary_state(state).to(self.device)
         next_state = helper.flatten_tertiary_state(next_state).to(self.device)
-        action = helper.flatten_tertiary_action(action).to(self.device)
+        action_raw = helper.flatten_tertiary_action(action)
+        action = torch.FloatTensor(action_raw).to(self.device)
+
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
+        if next_state.dim() == 1:
+            next_state = next_state.unsqueeze(0)
+        if action.dim() == 1:
+            action = action.unsqueeze(0)
 
         # Compute target Q value
         with torch.no_grad():
@@ -104,11 +112,11 @@ class SACAgent:
         q_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
 
         self.q1_opt.zero_grad()
-        q_loss.backward()
-        self.q1_opt.step()
-
         self.q2_opt.zero_grad()
+
         q_loss.backward()
+
+        self.q1_opt.step()
         self.q2_opt.step()
 
         # Update policy network

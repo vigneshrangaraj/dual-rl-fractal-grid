@@ -37,17 +37,19 @@ class Config:
     # Solar parameters
     num_solar = 2
     solar_buses = [5, 10]  # Bus locations where solar DERs are connected
-    solar_base_output = 0.005  # MW
+    solar_base_output = 1  # MW
     solar_variability = 0.1  # ±10% variability
 
     # Wind parameters
     num_wind = 1
     wind_buses = [15]  # Bus location for wind DER
-    wind_base_output = 0.007  # MW
+    wind_base_output = 1  # MW
     wind_variability = 0.2  # ±20% variability
 
+    der_max_capacity = 0.1  # Maximum capacity of DERs (e.g., solar/wind) in MW
+
     # BESS parameters
-    bess_capacity = 100.0  # kWh
+    bess_capacity = 10000.0  # kWh
     bess_max_charge = 20.0  # kW
     bess_max_discharge = 20.0  # kW
     bess_charge_efficiency = 0.95
@@ -62,7 +64,7 @@ class Config:
     # -------------------------------
     # Secondary Environment Settings
     # -------------------------------
-    num_secondary_agents = 3
+    num_secondary_agents = 3 # Number of DERs per microgrid
     voltage_gain = 0.05  # How reactive power changes affect voltage (pu per kVAR)
     secondary_noise_std = 0.002  # Std. deviation for voltage update noise
     secondary_max_steps = 50
@@ -78,8 +80,8 @@ class Config:
     # IA3C Agent (Secondary) Settings
     # -------------------------------
     # State typically includes local voltage and current reactive power output.
-    state_dim = 5
-    action_dim = 4
+    state_dim = 4
+    action_dim = 1
     hidden_dim = 128
     gamma = 0.99
     lr = 1e-3

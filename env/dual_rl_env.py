@@ -30,7 +30,7 @@ class DualRLEnv:
         secondary_state = self.secondary_env.reset()
         return {"tertiary": tertiary_state, "secondary": secondary_state}
 
-    def step(self, tertiary_action, secondary_actions):
+    def step(self, tertiary_action, time_step=0):
         """
             next_state (dict): Combined state from tertiary and secondary environments.
             rewards (dict): Contains separate rewards for tertiary and secondary layers and an overall reward.
@@ -38,35 +38,15 @@ class DualRLEnv:
             info (dict): Additional information from the tertiary environment.
         """
         # Tertiary step: update grid topology, run power flow, and compute tertiary reward.
-        next_ter_state, tertiary_reward, done, info = self.tertiary_env.step(tertiary_action)
-
-        # Execute multiple secondary steps to simulate local voltage control.
-        secondary_rewards = []
-        secondary_states = []
+        next_ter_state, tertiary_reward, done, info = self.tertiary_env.step(tertiary_action, time_step)
 
         # Get the measured volt at each microgrid and apply that to all the inverters in the secondary env.
         for i in range(self.config.num_microgrids):
             measured_voltage = next_ter_state["microgrids"][i]["measured_voltage"]
             self.secondary_env.set_measured_voltage(i, measured_voltage)
-        for _ in range(self.num_secondary_steps):
-            next_sec_state, sec_reward, done_sec, sec_info = self.secondary_env.step(secondary_actions)
-            secondary_rewards.append(sec_reward)
-            secondary_states.append(next_sec_state)
-            if done_sec:  # Optionally, break early if secondary environment signals done.
-                break
 
-        # Aggregate secondary reward (e.g., average over secondary steps).
-        aggregated_sec_reward = (sum(secondary_rewards) / len(secondary_rewards)
-                                 if secondary_rewards else 0.0)
-
-        # Compute overall reward: combine tertiary and weighted secondary rewards.
-        overall_reward = tertiary_reward + self.config.alpha_sec * aggregated_sec_reward
-
-        # Combine states from both environments.
-        next_state = {"tertiary": next_ter_state, "secondary": secondary_states}
-        rewards = {"tertiary": tertiary_reward,
-                   "secondary": aggregated_sec_reward,
-                   "overall": overall_reward}
+        next_state = next_ter_state
+        rewards = tertiary_reward
 
         return next_state, rewards, done, info
 

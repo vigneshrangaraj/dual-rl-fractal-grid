@@ -31,10 +31,12 @@ class ActorCriticNetwork(nn.Module):
 
 
 class IA3CAgent:
-    def __init__(self, config, agent_id=0):
+    def __init__(self, config, agent_id=0, microgrid_id=0, inverter_id=0):
         self.agent_id = agent_id
+        self.microgrid_id = microgrid_id
+        self.inverter_id = inverter_id
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.state_dim = getattr(config, "state_dim", 2)  # e.g., [voltage, reactive_power]
+        self.state_dim = getattr(config, "state_dim", 2)
         self.action_dim = getattr(config, "action_dim", 1)
         self.hidden_dim = getattr(config, "hidden_dim", 128)
         self.gamma = getattr(config, "gamma", 0.99)
@@ -46,7 +48,7 @@ class IA3CAgent:
         self.optimizer = optim.Adam(self.network.parameters(), lr=self.lr)
 
     def select_action(self, state):
-        state_vector = torch.tensor([state["voltage"], state["reactive_power"]],
+        state_vector = torch.tensor([state["voltage"], state["delta"], state["i_q"], state["i_d"] ],
                                     dtype=torch.float32).to(self.device)
         mean, std, value = self.network(state_vector)
         # Create a normal distribution from the actor outputs.
@@ -57,9 +59,9 @@ class IA3CAgent:
 
     def learn(self, state, action, log_prob, reward, next_state, done):
         # Convert state and next_state into tensors.
-        state_vector = torch.tensor([state["voltage"], state["reactive_power"]],
+        state_vector = torch.tensor([state["voltage"], state["i_d"], state["i_q"], state["delta"]],
                                     dtype=torch.float32).to(self.device)
-        next_state_vector = torch.tensor([next_state["voltage"], next_state["reactive_power"]],
+        next_state_vector = torch.tensor([next_state["voltage"], next_state["i_d"], next_state["i_q"], next_state["delta"]],
                                          dtype=torch.float32).to(self.device)
 
         mean, std, value = self.network(state_vector)

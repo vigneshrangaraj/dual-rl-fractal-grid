@@ -6,13 +6,14 @@ from env.secondary.inverter import Inverter
 class SecondaryEnv:
     def __init__(self, config):
         self.num_agents = config.num_secondary_agents
+        self.num_microgrids = getattr(config, "num_microgrids", 1)
         self.V_ref = getattr(config, "V_ref", 1.0)
         self.voltage_gain = getattr(config, "voltage_gain", 0.05)
         self.action_penalty = getattr(config, "action_penalty", 0.1)
         self.consensus_penalty = getattr(config, "consensus_penalty", 0.05)
         self.noise_std = getattr(config, "secondary_noise_std", 0.002)
         self.max_steps = getattr(config, "secondary_max_steps", 200)
-        self.adjacency_matrix = getattr(config, "adjacency_matrix", self.default_ring_topology(self.num_agents))
+        self.adjacency_matrix = getattr(config, "adjacency_matrix", self.default_ring_topology(self.num_agents * self.num_microgrids))
         self.num_microgrids = getattr(config, "num_microgrids", 1)
 
         # loop through microgrids and then num_agents to properly identify the inverter and the microgrid
@@ -26,7 +27,18 @@ class SecondaryEnv:
         self.reset()
 
     def reset(self):
-        self.states = [{"voltage": np.random.uniform(0.95, 1.05), "reactive_power": 0.0} for _ in range(self.num_agents)]
+        self.states = []
+        for i in range(len(self.inverters)):
+            inverter = self.inverters[i]
+            state = {
+                "voltage": np.random.uniform(0.95, 1.05),
+                "reactive_power": 0.0,
+                "i_d": inverter.i_d,
+                "i_q": inverter.i_q,
+                "delta": inverter.delta
+            }
+            self.states.append(state)
+
         self.time_step = 0
         return self.states
 
@@ -40,7 +52,7 @@ class SecondaryEnv:
         next_states = []
         rewards = []
 
-        for i in range(self.num_agents):
+        for i, inverter in enumerate(self.inverters):
             inverter = self.inverters[i]
             current_state = self.states[i]
             measured_voltage = current_state["voltage"]

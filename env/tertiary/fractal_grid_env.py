@@ -30,12 +30,53 @@ class FractalGridEnv:
         self.beta_volt = getattr(config, "beta_volt", 1.0)
 
         # Create microgrid instances
-        self.microgrids = [MicroGrid(config, mg_id=i) for i in range(self.num_microgrids)]
+        self.microgrids, self.switches, self.switch_set = self.initialize_microgrids(config)
 
         # Initialize PandaPower wrapper for AC power flow computations.
         self.pw_wrapper = PandaPowerWrapper(config)
         self.current_step = 0
         self.done = False
+
+    def initialize_microgrids(self, config):
+        # Initialize and connect microgrids based on a Fractal Tree algorithm
+        microgrids = []
+
+        # Initialize the set to track unique switches
+        switch_set = set()
+        # Connect microgrids using a Fractal Tree structure
+        if self.num_microgrids == 1:
+            microgrids.append(MicroGrid(config, 0))
+            return microgrids, 0  # Only one microgrid, no switches needed
+
+        for i in range(self.num_microgrids):
+            microgrid = MicroGrid(config, i)
+            microgrids.append(microgrid)
+        for i in range(self.num_microgrids):
+            left_child = 2 * i + 1  # Calculate index of left child
+            right_child = 2 * i + 2  # Calculate index of right child
+
+            microgrids[i].mg_id = i
+
+            if left_child < self.num_microgrids:
+                # Create a single bi-directional switch (consistent naming based on min/max index)
+                switch_name = f"S_{min(i, left_child)}_to_{max(i, left_child)}"
+                microgrids[i].add_neighbor(microgrids[left_child], switch_name)
+                microgrids[left_child].add_neighbor(microgrids[i], switch_name)
+
+                # Add the switch to the set (only if it hasn't been added before)
+                switch_set.add(switch_name)
+
+            if right_child < self.num_microgrids:
+                # Create a single bi-directional switch (consistent naming based on min/max index)
+                switch_name = f"S_{min(i, right_child)}_to_{max(i, right_child)}"
+                microgrids[i].add_neighbor(microgrids[right_child], switch_name)
+                microgrids[right_child].add_neighbor(microgrids[i], switch_name)
+
+                # Add the switch to the set (only if it hasn't been added before)
+                switch_set.add(switch_name)
+
+        total_switches = len(switch_set)
+        return microgrids, total_switches, switch_set
 
     def reset(self):
         self.current_step = 0
@@ -47,12 +88,14 @@ class FractalGridEnv:
         self.pw_wrapper.reset_network(self.microgrids, self.tie_lines)
         return self._get_state()
 
-    def step(self, tertiary_action):
+    def step(self, tertiary_action, time_step):
         # Apply dispatch commands to each microgrid.
-        dispatch = tertiary_action.get("dispatch", None)
-        if dispatch:
-            for i, mg in enumerate(self.microgrids):
-                mg.apply_dispatch(dispatch[i])
+        microgrid_actions = tertiary_action.get("microgrids", None)
+        for i, mg in enumerate(self.microgrids):
+            dispatch = microgrid_actions[i].get("dispatch_power", None)
+            mg.apply_dispatch(dispatch, time_step)
+            battery_operation = microgrid_actions[i].get("battery_operation", None)
+            mg.apply_battery_operation(battery_operation)
 
         # Update tie-line statuses if provided.
         new_tie_lines = tertiary_action.get("tie_lines", None)
