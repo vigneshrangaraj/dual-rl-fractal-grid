@@ -8,7 +8,7 @@ class MicroGrid:
         self.mg_id = mg_id
         self.config = config
         self.V_ref = getattr(config, "V_ref", 1.0)
-        self.num_buses = getattr(config, "num_buses", 34)
+        self.num_buses = getattr(config, "num_buses", 8)
         self.neighbors = []
         self.switches = {}
 
@@ -19,9 +19,10 @@ class MicroGrid:
 
         # Create the IEEE 34 bus network (a simplified version)
         self.net = self._create_ieee34_network()
+        self.filled_net = None
 
         # Add a storage element (BESS) at a designated bus (e.g., from config or default to bus 10)
-        self.storage_bus = getattr(config, "storage_bus", 10)
+        self.storage_bus = getattr(config, "storage_bus", 2)
         self.storage_idx = self._add_storage()
 
         self.der_max_capacity = getattr(config, "der_max_capacity", 0.0)
@@ -177,14 +178,24 @@ class MicroGrid:
         Positive value indicates discharging, negative indicates charging.
         """
         # Update the storage element in the network
-        self.net.storage.loc[self.storage_idx, "p_mw"] = battery_operation
-
-
+        battery_capacity = getattr(self.config, "bess_capacity", 100.0)  # kWh
+        self.net.storage.loc[self.storage_idx, "p_mw"] = battery_operation * (battery_capacity / 1000.0)  # Convert kWh to MW
+        # Update the state of charge (SOC) based on the operation
+        current_energy = self.net.storage.initial_e_mwh.iloc[self.storage_idx]
+        new_energy = current_energy + battery_operation * (battery_capacity / 1000.0)  # Convert kWh to MWh
+        self.net.storage.loc[self.storage_idx, "initial_e_mwh"] = max(0, min(new_energy, battery_capacity / 1000.0))
+        # Update the storage element in the network
+        self.net.storage.loc[self.storage_idx, "initial_e_mwh"] = self.net.storage.initial_e_mwh.iloc[self.storage_idx]
+        # Update the storage element in the network
+        self.net.storage.loc[self.storage_idx, "p_mw"] = battery_operation * (battery_capacity / 1000.0)  # Convert kWh to MW
 
     def update_state_from_power_flow(self, power_flow_results):
-        # Here we update the storage voltage from the power flow results if available.
-        bus_voltage = self.net.res_bus.vm_pu.loc[self.net.storage.bus[self.storage_idx]]
-        self.measured_voltage = bus_voltage
+        # if not NaN
+        if power_flow_results is not None and not np.isnan(power_flow_results):
+            self.measured_voltage = power_flow_results
+            self.net.res_bus.vm_pu.loc[self.storage_idx] = self.measured_voltage
+        else:
+            self.measured_voltage = self.V_ref
 
     def get_grid_power(self):
         total_power = self.net.res_bus.p_mw.sum()
@@ -194,25 +205,30 @@ class MicroGrid:
         total_cost = 0.0
 
         # PV & Wind via sgen
-        if "res_sgen" in self.net and not self.net.res_sgen.empty:
-            sgen_data = self.net.res_sgen
-            types = self.net.sgen["type"] if "type" in self.net.sgen else ["pv"] * len(sgen_data)
+        if self.filled_net is not None and "res_sgen" in self.filled_net and not self.filled_net.res_sgen.empty:
+            sgen_data = self.filled_net.res_sgen
+            types = self.filled_net.sgen["name"] if "name" in self.filled_net.sgen else ["pv"] * len(sgen_data)
 
             for i, row in sgen_data.iterrows():
                 gen_type = types.iloc[i]
                 power = row["p_mw"]
 
-                if gen_type == "pv":
+                if gen_type.startswith("Solar"):
                     total_cost += self.pv_cost_per_mwh * power
-                elif gen_type == "wind":
+                elif gen_type.startswith("Wind"):
                     total_cost += self.wind_cost_per_mwh * power
 
         # BESS via storage
-        if "res_storage" in self.net and not self.net.res_storage.empty:
-            for _, row in self.net.res_storage.iterrows():
+        if self.filled_net is not None and "res_storage" in self.filled_net and not self.filled_net.res_storage.empty:
+            for _, row in self.filled_net.res_storage.iterrows():
                 power = abs(row["p_mw"])  # both charging/discharging = degradation
                 total_cost += self.bess_cost_per_mwh * power
 
+        if (self.filled_net is None):
+            # This means that the power flow failed
+            # and we have no generation cost.
+            # We need to penalize this from a cost perspective
+            total_cost = 100.0
         return total_cost
 
     def get_voltage_deviation(self):
@@ -230,7 +246,7 @@ class MicroGrid:
               }
         """
         # Extract storage information from PandaPower.
-        energy = self.net.storage.initial_e_mwh  # This is a placeholder; in practice, update energy over time.
+        energy = self.net.storage.initial_e_mwh
         bess_capacity = getattr(self.config, "bess_capacity", 100.0)
         bess_soc = energy / (bess_capacity / 1000.0)  # Both in MWh
         total_load = self.net.load.p_mw.sum()

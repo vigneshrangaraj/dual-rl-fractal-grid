@@ -6,6 +6,8 @@ import pandapower as pp
 import copy
 import pandapower.topology as top
 
+from env.secondary import secondary_env
+
 
 class PandaPowerWrapper:
     def __init__(self, config):
@@ -155,40 +157,42 @@ class PandaPowerWrapper:
         # print("=== FULL NET DATA ===")
         # print(net)
         #
-        # print("=== DIAGNOSTIC ===")
-        # diagnostic_result = pp.diagnostic(net)
-        # for key, value in diagnostic_result.items():
-        #     print(f"--- {key} ---")
-        #     print(value)
-        #
-        # # find isolated buses
-        # isolated_buses = top.unsupplied_buses(net)
-        # print(isolated_buses)
+        print("=== DIAGNOSTIC ===")
+        diagnostic_result = pp.diagnostic(net, report_style=None, silence_warnings=True)
+        for key, value in diagnostic_result.items():
+            print(f"--- {key} ---")
+            print(value)
+
+        # find isolated buses
+        isolated_buses = top.unsupplied_buses(net)
+        print(isolated_buses)
         #
         # # find unsupplied loads or generators
         # unsupplied_sgens = top.unsupplied_buses(net)
         # print(f"Unsupplied buses: {unsupplied_sgens}")
 
         try:
-            pp.runpp(net, init='flat', max_iteration=100, calculate_voltage_angles=True, tolerance_mva=1e-3, trafo_model="t", enforce_q_lims=True)
+            pp.runpp(net, init='flat', max_iteration=30, calculate_voltage_angles=True, tolerance_mva=1, trafo_model="t", enforce_q_lims=True)
         except Exception as e:
             print(f"Unified power flow failed: {e}")
-            print(net.res_bus)
             # penalize the fact that there is no convergence by returning a high voltage deviation
             for mg in microgrids:
-                buses = [bus_mapping[(mg.mg_id, idx)] for idx in mg.net.bus.index]
-                avg_voltage = net.res_bus.loc[buses].vm_pu.mean()
-                results[mg.mg_id] = 1 - avg_voltage
-            return results
+                results[mg.mg_id] = 2
+            inv_voltages = [2] * len(net.res_bus.vm_pu)
+            return results, inv_voltages
 
         print("=== POWER FLOW CONVERGED SUCCESSFULLY ===")
-        print(net.res_bus)
+        print("=== Voltage Results ===")
+        print(net.res_bus.vm_pu)
+        inv_voltages = net.res_bus.vm_pu.values
+
         for mg in microgrids:
+            mg.filled_net = net
             buses = [bus_mapping[(mg.mg_id, idx)] for idx in mg.net.bus.index]
             avg_voltage = net.res_bus.loc[buses].vm_pu.mean()
             results[mg.mg_id] = avg_voltage
 
-        return results
+        return results, inv_voltages
 
 
 # For testing the wrapper standalone.

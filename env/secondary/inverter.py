@@ -15,6 +15,11 @@ class Inverter:
         self.droop_coefficient = getattr(config, "droop_coefficient", 10.0)
         self.tau = getattr(config, "inverter_time_constant", 0.1)
         self.noise_std = getattr(config, "secondary_noise_std", 0.002)
+        
+        # Add voltage control parameters
+        self.k_p = getattr(config, "voltage_proportional_gain", 0.1)  # Proportional gain
+        self.k_i = getattr(config, "voltage_integral_gain", 0.01)    # Integral gain
+        self.error_integral = 0.0  # Integral of voltage error
 
         # Simulation parameters
         self.frequency = 50.0  # Hz
@@ -22,12 +27,15 @@ class Inverter:
         self.t = 0.0  # simulation time
         self.dt = 1e-3  # simulation timestep in seconds
 
+        self.measured_voltage = self.V
+
     def reset(self):
         self.V = self.V_nom
         self.delta = 0.0
         self.i_d = 0.0
         self.i_q = 0.0
         self.t = 0.0
+        self.error_integral = 0.0
 
     def simulate_phase_currents(self):
         Ia = self.V * np.sin(self.omega * self.t + self.delta)
@@ -36,10 +44,32 @@ class Inverter:
         return Ia, Ib, Ic
 
     def update(self, V_ref, measured_voltage):
+        # Calculate voltage error
         error = V_ref - measured_voltage
+        
+        # Update integral of error
+        self.error_integral += error * self.dt
+        
+        # Calculate voltage correction using PI control
+        voltage_correction = (self.k_p * error + 
+                            self.k_i * self.error_integral)
+        
+        # Add noise
         noise = np.random.normal(0, self.noise_std)
-        self.V = measured_voltage + (error * self.dt / self.tau) + noise
-        self.delta += (error * self.dt / self.droop_coefficient)
+        
+        # Update voltage with bounded change
+        max_voltage_change = 0.05  # Maximum voltage change per step
+        voltage_change = voltage_correction + noise
+        voltage_change = np.clip(voltage_change, -max_voltage_change, max_voltage_change)
+        
+        self.V = measured_voltage + voltage_change
+        
+        # Update phase angle using droop control
+        phase_correction = error * self.dt / self.droop_coefficient
+        self.delta += phase_correction
+        
+        # Normalize phase angle to [-pi, pi]
+        self.delta = np.arctan2(np.sin(self.delta), np.cos(self.delta))
 
         # Advance simulation time
         self.t += self.dt

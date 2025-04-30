@@ -10,11 +10,16 @@ class SecondaryEnv:
         self.V_ref = getattr(config, "V_ref", 1.0)
         self.voltage_gain = getattr(config, "voltage_gain", 0.05)
         self.action_penalty = getattr(config, "action_penalty", 0.1)
-        self.consensus_penalty = getattr(config, "consensus_penalty", 0.05)
+        self.consensus_penalty = getattr(config, "consensus_penalty", 0.005)
         self.noise_std = getattr(config, "secondary_noise_std", 0.002)
         self.max_steps = getattr(config, "secondary_max_steps", 200)
         self.adjacency_matrix = getattr(config, "adjacency_matrix", self.default_ring_topology(self.num_agents * self.num_microgrids))
         self.num_microgrids = getattr(config, "num_microgrids", 1)
+        
+        # Add voltage limits
+        self.V_min = getattr(config, "V_min", 0.5)  # Minimum allowed voltage
+        self.V_max = getattr(config, "V_max", 2.0)  # Maximum allowed voltage
+        self.max_voltage_change = getattr(config, "max_voltage_change", 0.05)  # Maximum voltage change per step
 
         # loop through microgrids and then num_agents to properly identify the inverter and the microgrid
         # it belongs to
@@ -42,7 +47,7 @@ class SecondaryEnv:
         self.time_step = 0
         return self.states
 
-    def set_measured_voltage(self, microgrid_index, voltage):
+    def set_measured_voltage(self, microgrid_index, voltage, agent_index):
         for i in range(self.num_agents):
             if self.inverters[i].mg_id == microgrid_index:
                 self.states[i]["voltage"] = voltage
@@ -54,23 +59,34 @@ class SecondaryEnv:
 
         for i, inverter in enumerate(self.inverters):
             inverter = self.inverters[i]
-            current_state = self.states[i]
-            measured_voltage = current_state["voltage"]
+            measured_voltage = inverter.measured_voltage
 
             # --- Consensus voltage correction ---
             neighbor_voltages = CommunicationModule.get_neighbor_voltages(i, self.states, self.adjacency_matrix)
             consensus_error = sum([(measured_voltage - vj) for vj in neighbor_voltages])
-
-            # --- Update voltage reference like feedback linearization ---
-            V_ref = measured_voltage * consensus_error
+            
+            # Normalize consensus error to prevent large corrections
+            consensus_error = np.clip(consensus_error, -0.1, 0.1)
 
             # --- Apply action (reactive power adjustment) ---
             action = actions[i]
-            inverter_action_voltage = V_ref + self.voltage_gain * action
+            # Clip action to reasonable range
+            action = np.clip(action, -1.0, 1.0)
+            
+            # --- Update voltage reference with proper constraints ---
+            V_ref = self.V_ref + self.voltage_gain * action
+            
+            # Add consensus correction with proper scaling
+            V_ref = V_ref + 0.1 * consensus_error
 
             # --- Update inverter state using inverter dynamics ---
-            new_inverter_state = inverter.update(V_ref=inverter_action_voltage, measured_voltage=measured_voltage)
+            new_inverter_state = inverter.update(V_ref=V_ref, measured_voltage=measured_voltage)
             new_voltage = new_inverter_state["V"]
+            
+            # Ensure voltage change is bounded
+            voltage_change = new_voltage - measured_voltage
+            if abs(voltage_change) > self.max_voltage_change:
+                new_voltage = measured_voltage + np.sign(voltage_change) * self.max_voltage_change
 
             # --- Construct state dict ---
             new_state = {
@@ -82,30 +98,36 @@ class SecondaryEnv:
             }
             next_states.append(new_state)
 
-            # --- Compute voltage reward zone ---
+            # --- Compute voltage reward with stronger penalties for voltage violations ---
             v_i = new_voltage
-            if 0.95 <= v_i <= 1.05:
-                reward = 0.05 - abs(1.0 - v_i)
-            elif 0.8 <= v_i < 0.95 or 1.05 < v_i <= 1.25:
-                reward = -abs(1.0 - v_i)
+            if 0.98 <= v_i <= 1.02:
+                reward = 10.0  # Strong positive reward for being very close to nominal
+            elif 0.95 <= v_i < 0.98 or 1.02 < v_i <= 1.05:
+                reward = 0.2 - abs(1.0 - v_i)
+            elif 0.9 <= v_i < 0.95 or 1.05 < v_i <= 1.1:
+                reward = -2.0 * abs(1.0 - v_i)
             else:
                 reward = -10.0
 
-            # Action penalty (optional)
-            reward -= self.action_penalty * abs(action)
-
-            # Consensus penalty (optional)
-            consensus_penalty = sum([(v_i - vj) ** 2 for vj in neighbor_voltages])
-            reward -= self.consensus_penalty * consensus_penalty
+            # Add action penalty to discourage large control actions
+            reward -= self.action_penalty * (action ** 2)
+            
+            # Add consensus penalty to encourage voltage coordination
+            reward -= self.consensus_penalty * (consensus_error ** 2)
 
             rewards.append(reward)
 
         self.states = next_states
         self.time_step += 1
-        done = self.time_step >= self.max_steps
+        done = self.time_step >= self.max_steps or all(
+            state["voltage"] < self.V_min or state["voltage"] > self.V_max for state in self.states
+        )
         info = {}
 
-        return next_states, rewards, done, info
+        # log progress
+        print(f"Secondary step {self.time_step}:")
+
+        return self.states, rewards, done, info
 
     def default_ring_topology(self, n):
         """

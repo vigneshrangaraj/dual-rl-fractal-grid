@@ -103,7 +103,7 @@ class FractalGridEnv:
             self.tie_lines = new_tie_lines
 
         # Run AC power flow on each microgrid and adjust for tie-line connections.
-        power_flow_results = self.pw_wrapper.run_power_flow(self.microgrids, self.tie_lines)
+        power_flow_results, inv_voltages = self.pw_wrapper.run_power_flow(self.microgrids, self.tie_lines)
 
         # Update each microgrid's state using the power flow results.
         for mg in self.microgrids:
@@ -126,8 +126,13 @@ class FractalGridEnv:
         info = {
             "power_flow": power_flow_results,
             "econ_cost": econ_cost,
-            "voltage_penalty": voltage_penalty
+            "voltage_penalty": voltage_penalty,
+            "inv_voltages": inv_voltages
         }
+
+        # log progress
+        print(f"Tertiary Step: {self.current_step}, Reward: {reward}, Done: {self.done}")
+
         return next_state, reward, self.done, info
 
     def _get_state(self):

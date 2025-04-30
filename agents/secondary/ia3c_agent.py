@@ -54,6 +54,8 @@ class IA3CAgent:
         # Create a normal distribution from the actor outputs.
         dist = D.Normal(mean, std)
         action = dist.sample()
+        # clip action to the action space
+        action = torch.clamp(action, 0, 1.0)
         log_prob = dist.log_prob(action).sum()  # Sum if action_dim > 1
         return action.item(), log_prob, value
 

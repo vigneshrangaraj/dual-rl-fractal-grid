@@ -19,7 +19,7 @@ class Config:
     # Tertiary Environment Settings
     # -------------------------------
     num_microgrids = 2
-    num_episodes = 1000
+    num_episodes = 10000
     # Each tie-line is represented as (mg_id1, mg_id2, status); status 1 = closed, 0 = open
     tie_lines = [(0, 1, 1)]
     V_ref = 1.0
@@ -36,13 +36,13 @@ class Config:
 
     # Solar parameters
     num_solar = 2
-    solar_buses = [5, 10]  # Bus locations where solar DERs are connected
+    solar_buses = [1, 5]  # Bus locations where solar DERs are connected
     solar_base_output = 1  # MW
     solar_variability = 0.1  # ±10% variability
 
     # Wind parameters
     num_wind = 1
-    wind_buses = [15]  # Bus location for wind DER
+    wind_buses = [7]  # Bus location for wind DER
     wind_base_output = 1  # MW
     wind_variability = 0.2  # ±20% variability
 
@@ -69,6 +69,13 @@ class Config:
     secondary_noise_std = 0.002  # Std. deviation for voltage update noise
     secondary_max_steps = 50
     action_penalty = 0.001  # Penalty coefficient for large control actions
+    
+    # Voltage control parameters
+    V_min = 0.9  # Minimum allowed voltage
+    V_max = 1.1  # Maximum allowed voltage
+    max_voltage_change = 0.05  # Maximum voltage change per step
+    voltage_proportional_gain = 0.1  # Proportional gain for voltage control
+    voltage_integral_gain = 0.01  # Integral gain for voltage control
 
     # Communication settings for DER agents (secondary level)
     comm_sigma = 1.0  # Sigma for Gaussian kernel in communication module

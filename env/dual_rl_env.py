@@ -39,11 +39,20 @@ class DualRLEnv:
         """
         # Tertiary step: update grid topology, run power flow, and compute tertiary reward.
         next_ter_state, tertiary_reward, done, info = self.tertiary_env.step(tertiary_action, time_step)
+        inv_voltages = info.get("inv_voltages", None)
 
-        # Get the measured volt at each microgrid and apply that to all the inverters in the secondary env.
-        for i in range(self.config.num_microgrids):
-            measured_voltage = next_ter_state["microgrids"][i]["measured_voltage"]
-            self.secondary_env.set_measured_voltage(i, measured_voltage)
+        solar_indexes = getattr(self.config, "solar_buses")
+        wind_indexes = getattr(self.config, "wind_buses")
+
+        for mg in range(self.config.num_microgrids):
+            # set state also
+            for i in range(len(solar_indexes) + len(wind_indexes)):
+                if (i < len(solar_indexes)):
+                    self.secondary_env.inverters[i].measured_voltage = inv_voltages[solar_indexes[i]]
+                    self.secondary_env.set_measured_voltage(mg, inv_voltages[solar_indexes[i]], i)
+                else:
+                    self.secondary_env.inverters[i].measured_voltage = inv_voltages[wind_indexes[i - len(solar_indexes)]]
+                    self.secondary_env.set_measured_voltage(mg, inv_voltages[wind_indexes[i - len(solar_indexes)]], i)
 
         next_state = next_ter_state
         rewards = tertiary_reward
