@@ -6,14 +6,13 @@ import pandapower as pp
 import copy
 import pandapower.topology as top
 
-from env.secondary import secondary_env
-
 
 class PandaPowerWrapper:
     def __init__(self, config):
         self.config = config
         self.microgrids = []
         self.tie_lines = []
+        self.filled_net = None
 
     def reset_network(self, microgrids, tie_lines):
         """
@@ -25,7 +24,8 @@ class PandaPowerWrapper:
         self.microgrids = microgrids
         self.tie_lines = tie_lines
 
-    def combine_microgrids_into_network(self, microgrids, tie_lines):
+    @staticmethod
+    def combine_microgrids_into_network(microgrids, tie_lines):
         combined_net = pp.create_empty_network()
         bus_mapping = {}
 
@@ -39,7 +39,7 @@ class PandaPowerWrapper:
                 bus_mapping[(mg.mg_id, idx)] = new_bus
 
             # Copy components: lines, loads, generators, storage
-            for element in ["line", "load", "sgen", "storage", "ext_grid"]:
+            for element in ["line", "load", "gen", "storage", "ext_grid"]:
                 if hasattr(mg_copy, element):
                     df = getattr(mg_copy, element)
                     for _, row in df.iterrows():
@@ -75,7 +75,7 @@ class PandaPowerWrapper:
                 # Make sure both microgrids have their own ext_grid
                 for mg_id in [mg1_id, mg2_id]:
                     mg = next(mg for mg in microgrids if mg.mg_id == mg_id)
-                    slack_bus_orig = self.find_ext_grid_bus(mg.net)
+                    slack_bus_orig = PandaPowerWrapper.find_ext_grid_bus(mg.net)
                     slack_bus_new = bus_mapping[(mg_id, slack_bus_orig)]
                     if not (combined_net.ext_grid.bus == slack_bus_new).any():
                         pp.create_ext_grid(combined_net, bus=slack_bus_new, vm_pu=1.0)
@@ -85,7 +85,7 @@ class PandaPowerWrapper:
                 x_ohm_per_km = 0.01
 
                 mg2 = next(mg for mg in microgrids if mg.mg_id == mg2_id)
-                slack_bus_mg2 = self.find_ext_grid_bus(mg2.net)
+                slack_bus_mg2 = PandaPowerWrapper.find_ext_grid_bus(mg2.net)
                 slack_bus_mg2_new = bus_mapping[(mg2_id, slack_bus_mg2)]
 
                 combined_net.ext_grid = combined_net.ext_grid[combined_net.ext_grid['bus'] != slack_bus_mg2_new]
@@ -109,26 +109,38 @@ class PandaPowerWrapper:
                     name=f"tie_{mg1_id}_{mg2_id}"
                 )
 
+        print("switch", combined_net["switch"])
+
 
         return combined_net, bus_mapping
 
-    def find_ext_grid_bus(self, mg_net):
+    @staticmethod
+    def find_ext_grid_bus(mg_net):
         """Finds the bus index where the ext_grid is attached in a microgrid net."""
         ext_grid_df = mg_net.ext_grid
         if len(ext_grid_df) == 0:
             raise ValueError("Microgrid has no ext_grid defined.")
         return ext_grid_df.bus.values[0]
 
-    def run_power_flow(self, microgrids, tie_lines):
-        net, bus_mapping = self.combine_microgrids_into_network(microgrids, tie_lines)
-        results = {}
+    @staticmethod
+    def check_islanded_balance(filled_net):
+        """
+        In islanded mode, ext_grid should supply ≈ 0 power.
+        If not, local DERs are under/over-provisioned.
+        """
+        if filled_net is not None and "res_ext_grid" in filled_net and not filled_net.res_ext_grid.empty:
+            p_mw = filled_net.res_ext_grid.p_mw.sum()
+            if abs(p_mw) > 1e-3:  # Tolerance of 1W
+                print(f"[Warning] Ext grid is supplying {p_mw:.4f} MW — system is not balanced.")
+            return p_mw
+        return 0.0
 
-        for idx in net.line.index:
-            net.line.at[idx, "std_type"] = "NAYY 4x150 SE"
-
-        # clip sgen to more than 0
-        if hasattr(net, "sgen"):
-            net.sgen.loc[net.sgen.p_mw < 0, "p_mw"] = 0
+    @staticmethod
+    def run_power_flow(microgrids, tie_lines):
+        if (len(microgrids) == 1):
+            net = microgrids[0].net
+        else:
+            net = microgrids[0].net
 
         # print("=== EXT GRIDS ===")
         # print(net.ext_grid)
@@ -148,8 +160,8 @@ class PandaPowerWrapper:
         # print("=== LOADS ===")
         # print(net.load)
         #
-        # print("=== SGENS ===")
-        # print(net.sgen)
+        # print("=== genS ===")
+        # print(net.gen)
         #
         # print("=== STORAGE ===")
         # print(net.storage)
@@ -157,42 +169,43 @@ class PandaPowerWrapper:
         # print("=== FULL NET DATA ===")
         # print(net)
         #
-        print("=== DIAGNOSTIC ===")
-        diagnostic_result = pp.diagnostic(net, report_style=None, silence_warnings=True)
-        for key, value in diagnostic_result.items():
-            print(f"--- {key} ---")
-            print(value)
-
-        # find isolated buses
-        isolated_buses = top.unsupplied_buses(net)
-        print(isolated_buses)
+        # print("=== DIAGNOSTIC ===")
+        # diagnostic_result = pp.diagnostic(net, report_style=None, silence_warnings=True)
+        # for key, value in diagnostic_result.items():
+        #     print(f"--- {key} ---")
+        #     print(value)
         #
+        # # find isolated buses
+        # isolated_buses = top.unsupplied_buses(net)
+        # print(isolated_buses)
+        # #
         # # find unsupplied loads or generators
-        # unsupplied_sgens = top.unsupplied_buses(net)
-        # print(f"Unsupplied buses: {unsupplied_sgens}")
+        # unsupplied_gens = top.unsupplied_buses(net)
+        # print(f"Unsupplied buses: {unsupplied_gens}")
 
         try:
-            pp.runpp(net, init='flat', max_iteration=30, calculate_voltage_angles=True, tolerance_mva=1, trafo_model="t", enforce_q_lims=True)
+            pp.runpp(net, algorithm="nr", max_iteration=50, calculate_voltage_angles=True, tolerance_mva=1e-2, enforce_q_lims=True)
         except Exception as e:
             print(f"Unified power flow failed: {e}")
-            # penalize the fact that there is no convergence by returning a high voltage deviation
-            for mg in microgrids:
-                results[mg.mg_id] = 2
             inv_voltages = [2] * len(net.res_bus.vm_pu)
-            return results, inv_voltages
+            print("==== print total mv at load and gen =====")
+            print(net.load.p_mw)
+            print(net.gen.p_mw)
+            return net, inv_voltages
 
         print("=== POWER FLOW CONVERGED SUCCESSFULLY ===")
         print("=== Voltage Results ===")
         print(net.res_bus.vm_pu)
         inv_voltages = net.res_bus.vm_pu.values
+        print("==== print total mv at load and gen =====")
+        print(net.load.p_mw)
+        print(net.gen.p_mw)
 
         for mg in microgrids:
             mg.filled_net = net
-            buses = [bus_mapping[(mg.mg_id, idx)] for idx in mg.net.bus.index]
-            avg_voltage = net.res_bus.loc[buses].vm_pu.mean()
-            results[mg.mg_id] = avg_voltage
+            avg_voltage = net.res_bus.vm_pu.mean()
 
-        return results, inv_voltages
+        return net, inv_voltages
 
 
 # For testing the wrapper standalone.

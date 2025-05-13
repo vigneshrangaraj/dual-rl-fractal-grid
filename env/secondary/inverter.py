@@ -3,7 +3,7 @@ import numpy as np
 
 
 class Inverter:
-    def __init__(self, config, inverter_id=0, mg_id=0):
+    def __init__(self, config, bus_id, inverter_id=0, mg_id=0):
         self.inverter_id = inverter_id
         self.V_nom = getattr(config, "V_nom", 1.0)
         self.V = self.V_nom  # initial voltage in per unit
@@ -11,6 +11,7 @@ class Inverter:
         self.i_d = 0.0
         self.i_q = 0.0
         self.mg_id = mg_id  # microgrid ID
+        self.bus_id = bus_id
 
         self.droop_coefficient = getattr(config, "droop_coefficient", 10.0)
         self.tau = getattr(config, "inverter_time_constant", 0.1)
@@ -110,7 +111,7 @@ if __name__ == "__main__":
         secondary_noise_std = 0.002
 
     config = Config()
-    inv = Inverter(config, inverter_id=0)
+    inv = Inverter(config, 0, inverter_id=0)
     print("Initial Inverter State:", inv.get_state())
     for _ in range(10):
         state = inv.update(V_ref=1.02, measured_voltage=inv.V)

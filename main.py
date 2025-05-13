@@ -5,6 +5,9 @@ import logging
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+
+from plotter.reward_plotter import RewardPlotter
+from plotter.action_state_plotter import ActionStatePlotter
 from utils.config import Config
 from env.dual_rl_env import DualRLEnv
 from agents.tertiary.sac_agent import SACAgent
@@ -16,82 +19,7 @@ from typing import List
 # Create directory for models if it doesn't exist
 os.makedirs("models", exist_ok=True)
 
-def moving_average(data: List[float], window_size: int) -> List[float]:
-    """Compute moving average using a fixed window size."""
-    if len(data) < window_size:
-        return [float("nan")] * len(data)
-    return [float("nan")] * (window_size - 1) + [
-        sum(data[i - window_size + 1:i + 1]) / window_size for i in range(window_size - 1, len(data))
-    ]
 
-class RewardPlotter:
-    """Class to handle real-time reward plotting (only smoothened)"""
-    def __init__(self, num_secondary_agents: int, smooth_window: int = 50):
-        self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(10, 8))
-        self.tertiary_rewards: List[float] = []
-        self.secondary_rewards: List[List[float]] = [[] for _ in range(num_secondary_agents)]
-        self.episodes: List[int] = []
-        self.smooth_window = smooth_window
-
-        # Create plots directory if it doesn't exist
-        os.makedirs("plots", exist_ok=True)
-
-        # Set up tertiary reward plot (only smoothened)
-        self.ax1.set_title("Tertiary Agent Reward (Smoothed)")
-        self.ax1.set_xlabel("Episode")
-        self.ax1.set_ylabel("Reward")
-        self.tertiary_smooth_line, = self.ax1.plot([], [], "r-", label=f"Smoothed ({smooth_window})")
-        self.ax1.legend()
-
-        # Set up secondary rewards plot (only smoothened)
-        self.ax2.set_title("Secondary Agents Rewards (Smoothed)")
-        self.ax2.set_xlabel("Episode")
-        self.ax2.set_ylabel("Reward")
-        self.secondary_smooth_lines = [self.ax2.plot([], [], label=f"Agent {i} Smoothed")[0] for i in range(num_secondary_agents)]
-        self.ax2.legend()
-
-        plt.tight_layout()
-        plt.ion()  # Turn on interactive mode
-
-    def update(self, episode: int, tertiary_reward: float, secondary_rewards: List[float]):
-        self.episodes.append(episode)
-        self.tertiary_rewards.append(tertiary_reward)
-        for i, reward in enumerate(secondary_rewards):
-            self.secondary_rewards[i].append(reward)
-
-        # Update tertiary plot (only smoothened)
-        smooth_ter = moving_average(self.tertiary_rewards, self.smooth_window)
-        self.tertiary_smooth_line.set_data(self.episodes, smooth_ter)
-        self.ax1.relim()
-        self.ax1.autoscale_view()
-
-        # Update secondary plots (only smoothened)
-        for i, line in enumerate(self.secondary_smooth_lines):
-            smooth_sec = moving_average(self.secondary_rewards[i], self.smooth_window)
-            line.set_data(self.episodes, smooth_sec)
-        self.ax2.relim()
-        self.ax2.autoscale_view()
-
-        plt.draw()
-        plt.pause(0.01)
-        # Save plot every 1 episode (as before)
-        if episode % 1 == 0:
-            self.save_plot(episode)
-
-    def save_plot(self, episode):
-        """Save the current plot to a file"""
-        filename = f"plots/rewards_episode.png"
-        self.fig.savefig(filename, dpi=300, bbox_inches="tight")
-        logging.info(f"Plot saved to {filename}")
-        
-    def save_final_plot(self):
-        """Save the final plot"""
-        self.save_plot("final")
-        # Also save the reward data for potential future analysis
-        np.save("plots/tertiary_rewards.npy", np.array(self.tertiary_rewards))
-        np.save("plots/secondary_rewards.npy", np.array(self.secondary_rewards))
-        np.save("plots/episodes.npy", np.array(self.episodes))
-        logging.info("Final plot and reward data saved to plots/ directory")
 
 def save_models(tertiary_agent, secondary_agents, episode):
     """Save models at regular intervals"""
@@ -100,7 +28,8 @@ def save_models(tertiary_agent, secondary_agents, episode):
         for i, agent in enumerate(secondary_agents):
             agent.save(f"models/secondary_agent_{i}_episode")
 
-def main():
+
+def main(tertiary_action=None):
     # Load configuration parameters
     global sec_rewards, sec_done
     config = Config()
@@ -133,23 +62,31 @@ def main():
     # Initialize the plotter
     plotter = RewardPlotter(len(secondary_agents))
 
+    actions_plotter = ActionStatePlotter(
+        num_secondary_agents=len(secondary_agents),
+        num_tertiary_actions=3,
+        num_tertiary_states=len(flat_state),
+        num_secondary_states=len(state["secondary"][0]),
+        smooth_window=50
+    )
+
     num_secondary_steps = getattr(config, "num_secondary_steps", 5)
     num_episodes = getattr(config, "num_episodes", 1000)
 
     for ep in range(num_episodes):
-        logging.info(f"Starting episode {ep + 1}/{num_episodes}")
+        print(f"=================Starting episode {ep + 1}/{num_episodes}")
         done = False
         episode_reward = 0.0
         secondary_episode_rewards = [0.0 for _ in secondary_agents]
 
         while not done:
-            logging.info("Current time step: %d", time_step)
             ter_state = state.get("tertiary", None)
             ter_action, ter_log_prob, ter_value = tertiary_agent.select_action(ter_state, dual_env.tertiary_env.switch_set)
             next_state, ter_rewards, ter_done, ter_info = dual_env.step(ter_action, time_step)
 
             sec_total_reward = 0.0
             sec_state = state.get("secondary", None)
+            convergences = []
             for _ in range(num_secondary_steps):
                 secondary_actions = []
                 secondary_log_probs = []
@@ -160,8 +97,11 @@ def main():
                     secondary_actions.append(sec_action)
                     secondary_log_probs.append(sec_log_prob)
 
-                new_sec_state, sec_rewards, sec_done, sec_info = dual_env.secondary_env.step(secondary_actions)
+                new_sec_state, sec_rewards, sec_done, sec_info = dual_env.secondary_env.step(secondary_actions,
+                                                                                             dual_env.tertiary_env.microgrids,
+                                                                                             ter_action.get("tie_lines", None))
                 sec_total_reward += np.mean(sec_rewards)
+                convergences.append(sec_info.get("is_converged", False))
                 
                 # Accumulate rewards for each secondary agent
                 for i, reward in enumerate(sec_rewards):
@@ -169,11 +109,27 @@ def main():
                     
                 sec_state = new_sec_state
                 if sec_done:
+                    dual_env.secondary_env.time_step = 0
                     break
+
+            for micrigrid in dual_env.tertiary_env.microgrids:
+                micrigrid.pf_net = sec_info.get("net", None)
 
             aggregated_sec_reward = sec_total_reward / num_secondary_steps
             # Normalize secondary rewards
             overall_reward = ter_rewards + config.alpha_sec * aggregated_sec_reward
+
+            # Check for how much was borrwed from ext_grid.. if it is negative, it means we are borrowing
+            # from the grid if positive, we are giving back to the grid
+            # reward giving back and selling instead of borrowing
+            p_mw = sec_info.get("new_energy", None)
+            if p_mw is not None:
+                overall_reward += config.beta_ext_grid * p_mw
+
+            # Also check for load deficit
+            is_deficient, deficit = dual_env.tertiary_env.check_power_deficit(sec_info.get("net", None))
+            if is_deficient:
+                overall_reward -= config.beta_deficient * ( deficit * 100)
             episode_reward += overall_reward
 
             # Update agents
@@ -188,12 +144,11 @@ def main():
 
             for i, agent in enumerate(secondary_agents):
                 agent.learn(
-                    state=state["secondary"][i],
-                    action=secondary_actions[i],
+                    state=sec_state[i],
+                    log_prob=secondary_log_probs[i],
                     reward=sec_rewards[i],
                     next_state=sec_state[i],
-                    log_prob=secondary_log_probs[i],
-                    done=ter_done
+                    done=sec_done
                 )
 
             time_step += 1
@@ -207,7 +162,6 @@ def main():
                          f"Secondary actions: {secondary_actions}, Overall reward: {overall_reward:.2f}")
             print(f"Overall step: Episode {ep + 1}, Step {time_step}: Tertiary reward: {ter_rewards:.2f}, "
                          f"Secondary rewards: {sec_rewards}, Overall reward: {overall_reward:.2f}")
-
             done = ter_done
 
         # Normalize secondary rewards by number of steps
@@ -215,6 +169,7 @@ def main():
         
         # Update plots
         plotter.update(ep + 1, episode_reward, secondary_episode_rewards)
+        #actions_plotter.update(ep + 1, ter_action, secondary_actions, ter_state, sec_state)
         
         # Save models periodically
         save_models(tertiary_agent, secondary_agents, ep + 1)

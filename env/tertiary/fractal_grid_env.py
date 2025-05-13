@@ -46,7 +46,7 @@ class FractalGridEnv:
         # Connect microgrids using a Fractal Tree structure
         if self.num_microgrids == 1:
             microgrids.append(MicroGrid(config, 0))
-            return microgrids, 0  # Only one microgrid, no switches needed
+            return microgrids, 0, switch_set  # Only one microgrid, no switches needed
 
         for i in range(self.num_microgrids):
             microgrid = MicroGrid(config, i)
@@ -88,11 +88,31 @@ class FractalGridEnv:
         self.pw_wrapper.reset_network(self.microgrids, self.tie_lines)
         return self._get_state()
 
+    def check_power_deficit(self, net):
+
+        # Total real power demand
+        total_load = net.res_load.p_mw.sum()
+
+        # Total real power generation from:
+        gen_power = net.res_gen.p_mw[net.gen.p_mw > 0].sum()
+        storage_discharge = net.res_storage.p_mw[net.res_storage.p_mw > 0].sum()
+
+        total_supply = gen_power + storage_discharge
+
+        # Net power shortfall (if positive)
+        deficit = total_load - total_supply
+
+        overloaded = deficit > 1e-4  # tolerance
+        overloaded_amount = max(0, deficit)
+
+        return overloaded, overloaded_amount
+
     def step(self, tertiary_action, time_step):
         # Apply dispatch commands to each microgrid.
         microgrid_actions = tertiary_action.get("microgrids", None)
         for i, mg in enumerate(self.microgrids):
             dispatch = microgrid_actions[i].get("dispatch_power", None)
+            mg.apply_load_p_mv_by_timestep(time_step)
             mg.apply_dispatch(dispatch, time_step)
             battery_operation = microgrid_actions[i].get("battery_operation", None)
             mg.apply_battery_operation(battery_operation)
@@ -102,32 +122,21 @@ class FractalGridEnv:
         if new_tie_lines is not None:
             self.tie_lines = new_tie_lines
 
-        # Run AC power flow on each microgrid and adjust for tie-line connections.
-        power_flow_results, inv_voltages = self.pw_wrapper.run_power_flow(self.microgrids, self.tie_lines)
-
-        # Update each microgrid's state using the power flow results.
-        for mg in self.microgrids:
-            mg.update_state_from_power_flow(power_flow_results.get(mg.mg_id, self.V_ref))
-
         # Compute the economic cost across microgrids.
         econ_cost = self._calculate_economic_cost()
-        # Compute the voltage penalty (e.g., mean squared deviation from V_ref).
-        voltage_penalty = self._calculate_voltage_penalty()
 
         # Compute the overall reward.
         reward = (-self.lambda_econ * econ_cost +
-                  self.beta_volt * voltage_penalty)
+                  self.beta_volt)
 
         self.current_step += 1
         if self.current_step >= self.max_steps:
+            self.current_step = 0
             self.done = True
 
         next_state = self._get_state()
         info = {
-            "power_flow": power_flow_results,
-            "econ_cost": econ_cost,
-            "voltage_penalty": voltage_penalty,
-            "inv_voltages": inv_voltages
+            "econ_cost": econ_cost
         }
 
         # log progress
@@ -147,10 +156,6 @@ class FractalGridEnv:
     def _calculate_economic_cost(self):
         cost = sum(mg.get_generation_cost() for mg in self.microgrids)
         return cost
-
-    def _calculate_voltage_penalty(self):
-        penalty = sum(mg.get_voltage_deviation() for mg in self.microgrids)
-        return penalty
 
 # --- Testing the FractalGridEnv independently ---
 if __name__ == "__main__":

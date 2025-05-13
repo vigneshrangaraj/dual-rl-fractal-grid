@@ -18,16 +18,18 @@ class Config:
     # -------------------------------
     # Tertiary Environment Settings
     # -------------------------------
-    num_microgrids = 2
+    num_microgrids = 1
     num_episodes = 10000
     # Each tie-line is represented as (mg_id1, mg_id2, status); status 1 = closed, 0 = open
     tie_lines = [(0, 1, 1)]
     V_ref = 1.0
-    max_steps = 100
+    max_steps = 23
     # Reward weighting factors
     lambda_econ = 1.0  # Weight for economic cost penalty
     alpha_sec = 0.5  # Weight for secondary performance feedback
     beta_volt = 1.0  # Weight for voltage deviation penalty
+    beta_deficient = 1.0
+    num_buses=3
 
     # Load parameters (tertiary level, e.g., aggregated load)
     base_load = 50.0  # kW
@@ -35,18 +37,24 @@ class Config:
     load_cost_factor = 0.05  # Cost per kW of load
 
     # Solar parameters
-    num_solar = 2
-    solar_buses = [1, 5]  # Bus locations where solar DERs are connected
-    solar_base_output = 1  # MW
+    num_solar = 1
+    solar_buses = [4, 5]  # Bus locations where solar DERs are connected
+    solar_base_output = 10  # MW
     solar_variability = 0.1  # ±10% variability
 
     # Wind parameters
     num_wind = 1
-    wind_buses = [7]  # Bus location for wind DER
-    wind_base_output = 1  # MW
+    wind_buses = [6, 7]  # Bus location for wind DER
+    wind_base_output = 20  # MW
     wind_variability = 0.2  # ±20% variability
 
+    beta_convergence = 0.1
+
+    combine_bus_inv_idx = [4, 5, 6, 7]  # Buses where DERs are connected
+
     der_max_capacity = 0.1  # Maximum capacity of DERs (e.g., solar/wind) in MW
+
+    beta_ext_grid = 0.1  # Weight for external grid cost
 
     # BESS parameters
     bess_capacity = 10000.0  # kWh
@@ -64,11 +72,13 @@ class Config:
     # -------------------------------
     # Secondary Environment Settings
     # -------------------------------
-    num_secondary_agents = 3 # Number of DERs per microgrid
+    num_secondary_agents = 4 # Number of DERs per microgrid
     voltage_gain = 0.05  # How reactive power changes affect voltage (pu per kVAR)
     secondary_noise_std = 0.002  # Std. deviation for voltage update noise
-    secondary_max_steps = 50
+    secondary_max_steps = 5
     action_penalty = 0.001  # Penalty coefficient for large control actions
+
+    V_nom = 1 # Nominal voltage (pu)
     
     # Voltage control parameters
     V_min = 0.9  # Minimum allowed voltage
@@ -88,7 +98,7 @@ class Config:
     # -------------------------------
     # State typically includes local voltage and current reactive power output.
     state_dim = 4
-    action_dim = 1
+    action_dim = 10
     hidden_dim = 128
     gamma = 0.99
     lr = 1e-3
