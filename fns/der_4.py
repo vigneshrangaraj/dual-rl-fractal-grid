@@ -5,6 +5,11 @@ class der_4():
     def __init__(self):
         self.net = pp.create_empty_network()
         self.storage_idx = None
+        self.wind_buses = [6, 7]  # Bus location for wind DER
+        self.combine_bus_inv_idx = [4, 5, 6, 7]
+        self.num_buses = 5
+        self.num_secondary_agents = 4
+        self.solar_buses = [4, 5]  # Bus locations where solar DERs are connected
         self.build_network()
 
     def get_network(self):
@@ -29,6 +34,7 @@ class der_4():
         line2 = pp.create_line(net, bus5, bus6, length_km=2.0, std_type="NA2XS2Y 1x240 RM/25 12/20 kV", name="Line 2")
         line3 = pp.create_line(net, bus6, bus7, length_km=3.5, std_type="48-AL1/8-ST1A 20.0", name="Line 3")
         line4 = pp.create_line(net, bus7, bus5, length_km=2.5, std_type="NA2XS2Y 1x240 RM/25 12/20 kV", name="Line 4")
+        line5 = pp.create_line(net, bus7, bus8, length_km=0.5, std_type="NA2XS2Y 1x240 RM/25 12/20 kV", name="Line 5")
 
         sw1 = pp.create_switch(net, bus2, bus3, et="b", type="CB", closed=True)
         sw2 = pp.create_switch(net, bus4, bus5, et="b", type="CB", closed=True)
@@ -37,12 +43,12 @@ class der_4():
         sw3 = pp.create_switch(net, bus5, line2, et="l", type="LBS", closed=True)
         sw4 = pp.create_switch(net, bus6, line2, et="l", type="LBS", closed=True)
         sw5 = pp.create_switch(net, bus6, line3, et="l", type="LBS", closed=True)
-        sw6 = pp.create_switch(net, bus7, line3, et="l", type="LBS", closed=False)
+        sw6 = pp.create_switch(net, bus7, line3, et="l", type="LBS", closed=True)
         sw7 = pp.create_switch(net, bus7, line4, et="l", type="LBS", closed=True)
         sw8 = pp.create_switch(net, bus5, line4, et="l", type="LBS", closed=True)
 
-        pp.create_load(net, bus7, p_mw=20, q_mvar=4, scaling=0.6, name="load")
-        pp.create_load(net, bus6, p_mw=20, q_mvar=4, scaling=0.6, name="load")
+        pp.create_load(net, bus7, p_mw=5, q_mvar=4, scaling=0.6, name="load")
+        pp.create_load(net, bus6, p_mw=5, q_mvar=4, scaling=0.6, name="load")
         pp.create_load(net, bus5, p_mw=2, q_mvar=4, scaling=0.6, name="load")
         pp.create_load(net, bus4, p_mw=2, q_mvar=4, scaling=0.6, name="load")
         pp.create_load(net, bus3, p_mw=2, q_mvar=4, scaling=0.6, name="load")
@@ -52,8 +58,8 @@ class der_4():
         pp.create_gen(net, bus7, p_mw=50, max_q_mvar=3, name='Wind_6', min_q_mvar=-3, vm_pu=1.03)
         pp.create_gen(net, bus8, p_mw=50, max_q_mvar=3, name='Wind_7', min_q_mvar=-3, vm_pu=1.03)
 
-        self.storage_idx = pp.create_storage(net, bus=bus8, p_mw=0.5, max_e_mwh=50.0, min_e_mwh=0.2, soc_percent=50, name="storage",
-                          max_p_mw=1.0, min_p_mw=-1.0, initial_e_mwh=0.5, q_mvar=0.2)
+        self.storage_idx = pp.create_storage(net, bus=bus6, p_mw=20, max_e_mwh=50.0, min_e_mwh=15, soc_percent=50, name="storage",
+                          max_p_mw=50, min_p_mw=-50, initial_e_mwh=0.5, q_mvar=0.2)
 
         pp.create_shunt(net, bus3, q_mvar=-0.96, p_mw=0, name='Shunt')
 

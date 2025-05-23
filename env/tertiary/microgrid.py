@@ -22,8 +22,16 @@ class MicroGrid:
         self.last_soc = 0.5
 
         # Create the IEEE 34 bus network (a simplified version)
-        self.net = self._create_ieee34_network()
+        self.base_loads = []
+        self.last_stored_battery_p_mw = 0.0
 
+        self.wind_buses = None
+        self.combine_bus_inv_idx = None
+        self.num_buses = None
+        self.num_secondary_agents = None
+        self.solar_buses = None
+
+        self.net = self._create_ieee34_network()
 
     def add_neighbor(self, neighbor, switch_name):
         self.neighbors.append(neighbor)
@@ -31,13 +39,21 @@ class MicroGrid:
 
     def _create_ieee34_network(self):
         der4_net = der4.der_4()
+        self.wind_buses = der4_net.wind_buses
+        self.combine_bus_inv_idx = der4_net.combine_bus_inv_idx
+        self.num_buses = der4_net.num_buses
+        self.num_secondary_agents = der4_net.num_secondary_agents
+        self.solar_buses = der4_net.solar_buses
         self.storage_idx = der4_net.get_storage_idx()
+
+        # populate base loads
+        for i in range(self.num_buses):
+            self.base_loads.append(der4_net.net.load.p_mw[i])
 
         return der4_net.get_network()
 
     def reset(self):
         self.net.res_bus.vm_pu = np.full(self.num_buses, self.V_ref)
-        return self.get_state()
 
     def get_voltage_at_bus(self, bus_idx):
         """
@@ -47,25 +63,6 @@ class MicroGrid:
             return self.net.res_bus.vm_pu.loc[bus_idx]
         except Exception:
             return None
-
-    def set_voltage_setpoint_for_der(self, voltage_setpoint, inverter_idx):
-        """
-        Set the voltage setpoint for DERs.
-        """
-        # Set the voltage setpoint for the inverter
-        self.net.gen.loc[inverter_idx, "vm_pu"] = voltage_setpoint
-
-    def apply_load_p_mv_by_timestep(self, time_step):
-        """
-        Get the load in MW at each bus for a given time step.
-        Add some randomness to the load to simulate real-world conditions.
-        """
-        # Load is assumed to be a function of time_step
-        load_factor = 1.0 + 0.1 * np.sin(time_step / 10.0)
-
-        for i in range(self.num_buses):
-            # Set the load at each bus
-            self.net.load.loc[i, "p_mw"] = load_factor * self.net.load.loc[i, "p_mw"]
 
     def check_for_generation_overload(self):
         """
@@ -89,7 +86,7 @@ class MicroGrid:
         Solar and wind generators are added as static generators (gen) at specified buses.
         """
         # Add solar DERs.
-        solar_buses = getattr(self.config, "solar_buses", [5, 10])
+        solar_buses = self.solar_buses
         solar_base_output = getattr(self.config, "solar_base_output", 0.005)  # in MW
         for bus in solar_buses:
             pp.create_gen(self.net, bus=bus,
@@ -98,90 +95,13 @@ class MicroGrid:
                            name=f"Solar_{bus}")
 
         # Add wind DERs.
-        wind_buses = getattr(self.config, "wind_buses", [15])
+        wind_buses = self.wind_buses
         wind_base_output = getattr(self.config, "wind_base_output", 0.007)  # in MW
         for bus in wind_buses:
             pp.create_gen(self.net, bus=bus,
                            p_mw=wind_base_output,
                            q_mvar=0.0,
                            name=f"Wind_{bus}")
-
-    def get_available_der_output(self, time_step):
-        """
-        Simulates available solar and wind generation based on hour of the day (0-23).
-        Returns (solar_availability_factor, wind_availability_factor).
-        """
-
-        # Solar Availability
-        if 6 <= time_step <= 18:
-            # Parabolic shape peaking at noon
-            solar_peak = 1.0
-            solar_availability = max(0.0, -0.01 * (time_step - 12) ** 2 + solar_peak)
-        else:
-            solar_availability = 0.0
-
-        # Wind Availability
-        np.random.seed(time_step)
-        base_wind = 0.5  # Base wind availability
-        fluctuation = np.random.uniform(-0.2, 0.2)  # +/-20% random fluctuation
-        wind_availability = np.clip(base_wind + fluctuation, 0.0, 1.0)
-
-        return solar_availability, wind_availability
-
-    def apply_dispatch(self, dispatch_command, time_step):
-        """
-        Apply dispatch command to DERs.
-        Now calls get_available_der_output() to get realistic availability based on time of day.
-        """
-
-        # Get available generation factors
-        solar_availability, wind_availability = self.get_available_der_output(time_step)
-
-        # Update Solar
-        solar_buses = getattr(self.config, "solar_buses", [5, 10])
-        solar_base_output = getattr(self.config, "solar_base_output", 0.005)
-
-        for i, bus in enumerate(solar_buses):
-            action = dispatch_command  # 0 or 1
-            available_p_mw = solar_base_output * solar_availability
-            self.net.gen.loc[self.net.gen['name'] == f"Solar_{bus}", 'p_mw'] = abs(action * available_p_mw)
-
-        # Update Wind
-        wind_buses = getattr(self.config, "wind_buses", [15])
-        wind_base_output = getattr(self.config, "wind_base_output", 0.007)
-
-        for i, bus in enumerate(wind_buses):
-            action = dispatch_command  # 0 or 1
-            available_p_mw = wind_base_output * wind_availability
-            self.net.gen.loc[self.net.gen['name'] == f"Wind_{bus}", 'p_mw'] = abs(action * available_p_mw)
-
-        # (optional) save availability factors if needed
-        self.solar_availability = solar_availability
-        self.wind_availability = wind_availability
-
-    def apply_battery_operation(self, battery_operation):
-        max_e_mwh = self.net.storage.loc[self.storage_idx, "max_e_mwh"]
-
-        # Convert SOC to stored energy
-        stored_energy_mwh = self.last_soc * max_e_mwh
-
-        energy_change = battery_operation * self.net.storage.loc[self.storage_idx, "max_e_mwh"]
-
-        # Clamp the new energy within limits
-        new_energy = np.clip(stored_energy_mwh + energy_change, 0.0, max_e_mwh)
-
-        # Update SOC
-        new_soc = new_energy / max_e_mwh
-        if not (0.0 < new_soc < 1.0):
-            print("Battery SOC out of bounds:", new_soc)
-            return
-
-        self.last_soc = new_soc
-
-        # Update network
-        self.net.storage.loc[self.storage_idx, "p_mw"] = battery_operation * self.net.storage.loc[self.storage_idx, "max_e_mwh"]
-        self.net.storage.loc[self.storage_idx, "initial_e_mwh"] = new_energy
-        self.net.storage.loc[self.storage_idx, "soc_percent"] = new_soc * 100
 
     def get_grid_power(self):
         """
@@ -215,41 +135,43 @@ class MicroGrid:
     def get_voltage_deviation(self):
         return self.measured_voltage - self.V_ref
 
-    def get_state(self):
-        """
-            dict: State dictionary, for example:
-              {
-                  "bess_soc": SOC as fraction,
-                  "load": total load on the network (MW),
-                  "der_generation": total DER generation (MW),
-                  "measured_voltage": voltage at the storage bus,
-                  "timestep": current simulation step
-              }
-        """
-        # Extract storage information from PandaPower.
-        bess_soc = self.last_soc  # Both in MWh
-        total_load = self.net.load.p_mw.sum()
-
-        # Sum generation from DERs (gen)
-        der_generation = self.net.gen.p_mw.sum()
-        try:
-            measured_voltage = self.pf_net.res_bus.vm_pu.loc[self.net.storage.bus[self.storage_idx]]
-        except Exception:
-            measured_voltage = 5
-        if np.isnan(measured_voltage):
-            measured_voltage = 5
-
-        # For simplicity, assume timestep is tracked externally.
-        # Here we set it to 0 as a placeholder.
-        timestep = 0
-
-        return {
-            "bess_soc": bess_soc,
-            "load": total_load,
-            "grid_power": self.get_grid_power(),
-            "der_generation": der_generation,
-            "measured_voltage": measured_voltage
-        }
+    # def get_state(self):
+    #     """
+    #         dict: State dictionary, for example:
+    #           {
+    #               "bess_soc": SOC as fraction,
+    #               "load": total load on the network (MW),
+    #               "der_generation": total DER generation (MW),
+    #               "measured_voltage": voltage at the storage bus,
+    #               "timestep": current simulation step
+    #           }
+    #     """
+    #     # Extract storage information from PandaPower.
+    #     bess_soc = self.last_soc  # Both in MWh
+    #     total_load = self.net.load.p_mw.sum()
+    #
+    #     # Sum generation from DERs (gen)
+    #     der_generation = self.net.gen.p_mw.sum()
+    #     try:
+    #         voltages = self.pf_net.res_gen.vm_pu.sum()
+    #         avg_voltage = float(voltages) / len(self.pf_net.res_gen.vm_pu)
+    #         measured_voltage = avg_voltage
+    #     except Exception:
+    #         measured_voltage = 5
+    #     if np.isnan(measured_voltage):
+    #         measured_voltage = 5
+    #
+    #     # For simplicity, assume timestep is tracked externally.
+    #     # Here we set it to 0 as a placeholder.
+    #     timestep = 0
+    #
+    #     return {
+    #         "bess_soc": bess_soc,
+    #         "load": total_load,
+    #         "grid_power": self.get_grid_power(),
+    #         "der_generation": der_generation,
+    #         "measured_voltage": measured_voltage
+    #     }
 
 
 # --- Testing the MicroGrid Module ---

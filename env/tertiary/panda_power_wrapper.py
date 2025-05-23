@@ -12,7 +12,6 @@ class PandaPowerWrapper:
         self.config = config
         self.microgrids = []
         self.tie_lines = []
-        self.filled_net = None
 
     def reset_network(self, microgrids, tie_lines):
         """
@@ -136,11 +135,7 @@ class PandaPowerWrapper:
         return 0.0
 
     @staticmethod
-    def run_power_flow(microgrids, tie_lines):
-        if (len(microgrids) == 1):
-            net = microgrids[0].net
-        else:
-            net = microgrids[0].net
+    def run_power_flow(net, tie_lines):
 
         # print("=== EXT GRIDS ===")
         # print(net.ext_grid)
@@ -200,10 +195,6 @@ class PandaPowerWrapper:
         print("==== print total mv at load and gen =====")
         print(net.load.p_mw)
         print(net.gen.p_mw)
-
-        for mg in microgrids:
-            mg.filled_net = net
-            avg_voltage = net.res_bus.vm_pu.mean()
 
         return net, inv_voltages
 

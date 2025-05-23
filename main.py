@@ -51,7 +51,7 @@ def main(tertiary_action=None):
     tertiary_agent = SACAgent(state_dim, action_dim, config)
 
     # For secondary agents
-    num_secondary = getattr(config, "num_secondary_agents", 5)
+    num_secondary = dual_env.tertiary_env.microgrids[0].num_secondary_agents
     secondary_agents = []
 
     for i in range(num_microgrids):
@@ -67,7 +67,6 @@ def main(tertiary_action=None):
         num_tertiary_actions=3,
         num_tertiary_states=len(flat_state),
         num_secondary_states=len(state["secondary"][0]),
-        smooth_window=50
     )
 
     num_secondary_steps = getattr(config, "num_secondary_steps", 5)
@@ -78,16 +77,21 @@ def main(tertiary_action=None):
         done = False
         episode_reward = 0.0
         secondary_episode_rewards = [0.0 for _ in secondary_agents]
-
+        secondary_episode_voltage_violations = [0 for _ in secondary_agents]
+        bess_soc_for_day = []
         while not done:
             ter_state = state.get("tertiary", None)
+            micrigrid = ter_state.get("microgrids", None)[0]
+            bess_soc_for_day.append(micrigrid.get("bess_soc", None))
             ter_action, ter_log_prob, ter_value = tertiary_agent.select_action(ter_state, dual_env.tertiary_env.switch_set)
             next_state, ter_rewards, ter_done, ter_info = dual_env.step(ter_action, time_step)
 
             sec_total_reward = 0.0
             sec_state = state.get("secondary", None)
             convergences = []
+            steps_secondary_run = 0
             for _ in range(num_secondary_steps):
+                steps_secondary_run += 1
                 secondary_actions = []
                 secondary_log_probs = []
                 new_sec_states = []
@@ -98,7 +102,7 @@ def main(tertiary_action=None):
                     secondary_log_probs.append(sec_log_prob)
 
                 new_sec_state, sec_rewards, sec_done, sec_info = dual_env.secondary_env.step(secondary_actions,
-                                                                                             dual_env.tertiary_env.microgrids,
+                                                                                             dual_env.tertiary_env,
                                                                                              ter_action.get("tie_lines", None))
                 sec_total_reward += np.mean(sec_rewards)
                 convergences.append(sec_info.get("is_converged", False))
@@ -106,6 +110,8 @@ def main(tertiary_action=None):
                 # Accumulate rewards for each secondary agent
                 for i, reward in enumerate(sec_rewards):
                     secondary_episode_rewards[i] += reward
+                for i, violation in enumerate(sec_info.get("violations", [])):
+                    secondary_episode_voltage_violations[i] += violation
                     
                 sec_state = new_sec_state
                 if sec_done:
@@ -115,9 +121,12 @@ def main(tertiary_action=None):
             for micrigrid in dual_env.tertiary_env.microgrids:
                 micrigrid.pf_net = sec_info.get("net", None)
 
-            aggregated_sec_reward = sec_total_reward / num_secondary_steps
+            aggregated_sec_reward = sec_total_reward / steps_secondary_run
             # Normalize secondary rewards
             overall_reward = ter_rewards + config.alpha_sec * aggregated_sec_reward
+
+            for i, reward in enumerate(secondary_episode_rewards):
+                secondary_episode_rewards[i] = reward / steps_secondary_run
 
             # Check for how much was borrwed from ext_grid.. if it is negative, it means we are borrowing
             # from the grid if positive, we are giving back to the grid
@@ -164,12 +173,15 @@ def main(tertiary_action=None):
                          f"Secondary rewards: {sec_rewards}, Overall reward: {overall_reward:.2f}")
             done = ter_done
 
+        # print bess soc
+        print(f"BESS SOC for day: {bess_soc_for_day}")
+
         # Normalize secondary rewards by number of steps
-        secondary_episode_rewards = [r / num_secondary_steps for r in secondary_episode_rewards]
+        secondary_episode_rewards = [r / 24 for r in secondary_episode_rewards]
         
         # Update plots
-        plotter.update(ep + 1, episode_reward, secondary_episode_rewards)
-        #actions_plotter.update(ep + 1, ter_action, secondary_actions, ter_state, sec_state)
+        actions_plotter.update(ep + 1, ter_action, secondary_actions, ter_state, sec_state)
+        plotter.update(ep + 1, episode_reward, secondary_episode_rewards, secondary_episode_voltage_violations)
         
         # Save models periodically
         save_models(tertiary_agent, secondary_agents, ep + 1)

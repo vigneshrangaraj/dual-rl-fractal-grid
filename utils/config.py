@@ -29,7 +29,6 @@ class Config:
     alpha_sec = 0.5  # Weight for secondary performance feedback
     beta_volt = 1.0  # Weight for voltage deviation penalty
     beta_deficient = 1.0
-    num_buses=3
 
     # Load parameters (tertiary level, e.g., aggregated load)
     base_load = 50.0  # kW
@@ -38,19 +37,15 @@ class Config:
 
     # Solar parameters
     num_solar = 1
-    solar_buses = [4, 5]  # Bus locations where solar DERs are connected
     solar_base_output = 10  # MW
     solar_variability = 0.1  # ±10% variability
 
     # Wind parameters
     num_wind = 1
-    wind_buses = [6, 7]  # Bus location for wind DER
-    wind_base_output = 20  # MW
+    wind_base_output = 15  # MW
     wind_variability = 0.2  # ±20% variability
 
     beta_convergence = 0.1
-
-    combine_bus_inv_idx = [4, 5, 6, 7]  # Buses where DERs are connected
 
     der_max_capacity = 0.1  # Maximum capacity of DERs (e.g., solar/wind) in MW
 
@@ -72,7 +67,6 @@ class Config:
     # -------------------------------
     # Secondary Environment Settings
     # -------------------------------
-    num_secondary_agents = 4 # Number of DERs per microgrid
     voltage_gain = 0.05  # How reactive power changes affect voltage (pu per kVAR)
     secondary_noise_std = 0.002  # Std. deviation for voltage update noise
     secondary_max_steps = 5
