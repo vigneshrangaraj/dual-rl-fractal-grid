@@ -96,7 +96,7 @@ class Config:
     hidden_dim = 128
     gamma = 0.99
     lr = 1e-3
-    entropy_coef = 0.01
+    entropy_coef = 0.1
     batch_size = 64
     alpha = 0.2
     tau = 0.005

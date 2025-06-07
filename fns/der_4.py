@@ -51,7 +51,7 @@ class der_4():
         pp.create_load(net, bus6, p_mw=5, q_mvar=4, scaling=0.6, name="load")
         pp.create_load(net, bus5, p_mw=2, q_mvar=4, scaling=0.6, name="load")
         pp.create_load(net, bus4, p_mw=2, q_mvar=4, scaling=0.6, name="load")
-        pp.create_load(net, bus3, p_mw=2, q_mvar=4, scaling=0.6, name="load")
+        pp.create_load(net, bus8, p_mw=2, q_mvar=4, scaling=0.6, name="load")
 
         pp.create_gen(net, bus5,  p_mw=20, max_q_mvar=3, name="Solar_4", min_q_mvar=-3, vm_pu=1.03)
         pp.create_gen(net, bus6, p_mw=20, max_q_mvar=3, name='Solar_5', min_q_mvar=-3, vm_pu=1.03)
@@ -65,19 +65,3 @@ class der_4():
 
     def get_storage_idx(self):
         return self.storage_idx
-
-    def get_tie_switch(self, net):
-        '''
-        Create a tie switch between any bus and connect the other net to it
-        :param self:
-        :return:
-        '''
-        # Create a new bus in the first network
-        bus1 = pp.create_bus(self.net, vn_kv=110, name="Tie Bus 1")
-        # Create a new bus in the second network
-        bus2 = pp.create_bus(net, vn_kv=110, name="Tie Bus 2")
-        # Create a new line between the two buses
-        line = pp.create_line(net, bus1, bus2, length_km=10, std_type="N2XS(FL)2Y 1x300 RM/35 64/110 kV", name="Tie Line")
-        # Create a new switch to connect the two networks
-        switch = pp.create_switch(net, bus1, line, et="l", type="LBS", closed=True)
-        return switch

@@ -1,41 +1,43 @@
 # env/secondary/comm.py
 import numpy as np
+from fns.der_4 import der_4
 
 
 class CommunicationModule:
-    def __init__(self, sigma=1.0, threshold=None):
+    def __init__(self, config, sigma=1.0, threshold=None ):
         self.sigma = sigma
         self.threshold = threshold
+        self.fn = der_4()
 
-    def compute_distance_matrix(self, positions):
-        diff = positions[:, np.newaxis, :] - positions[np.newaxis, :, :]
-        distance_matrix = np.sqrt(np.sum(diff ** 2, axis=-1))
-        return distance_matrix
+        inv_buses = self.fn.combine_bus_inv_idx
+        self.num_agents = self.fn.num_secondary_agents
+        self.num_microgrids = getattr(config, "num_microgrids", 1)
+        self.adjacency_matrix = self.default_ring_topology(self.num_agents * self.num_microgrids)
 
-    def compute_mask(self, positions):
-        distance_matrix = self.compute_distance_matrix(positions)
-        weights = np.exp(- (distance_matrix ** 2) / (2 * self.sigma ** 2))
-        if self.threshold is not None:
-            weights[distance_matrix > self.threshold] = 0.0
-        return weights
+    def default_ring_topology(self, n):
+        adj = np.zeros((n, n))
+        for i in range(n):
+            adj[i][(i - 1) % n] = 1
+            adj[i][(i + 1) % n] = 1
+        return adj
 
-    def aggregate_messages(self, messages, positions):
-        weights = self.compute_mask(positions)  # Shape: (N, N)
-        # Normalize weights for each DER (row-wise normalization)
-        weight_sums = np.sum(weights, axis=1, keepdims=True)
-        weight_sums[weight_sums == 0] = 1.0  # avoid division by zero
-        normalized_weights = weights / weight_sums  # Shape: (N, N)
-
-        # Extract the voltage error (first element) from each DER's message.
-        voltage_errors = messages[:, 0]  # Shape: (N,)
-        # Compute the weighted sum (aggregated communication signal) for each DER.
-        aggregated_comm = normalized_weights @ voltage_errors  # Shape: (N,)
-        return aggregated_comm
-
-    @staticmethod
-    def get_neighbor_voltages(agent_id, states, adjacency_matrix):
+    def get_neighbor_voltages(self, agent_id, states, adjacency_matrix):
         neighbors = np.where(adjacency_matrix[agent_id] > 0)[0]
         return [states[n]["voltage"] for n in neighbors]
+
+    def get_neighbors(self, agent_id):
+        def get_neighbors(self, agent_id):
+            """
+            Returns the list of neighbor agent IDs for a given agent ID based on the adjacency matrix.
+
+            Args:
+                agent_id (int): The ID of the agent whose neighbors are being queried.
+
+            Returns:
+                List[int]: A list of neighboring agent IDs.
+            """
+        return list(np.where(self.adjacency_matrix[agent_id] > 0)[0])
+
 
 
 # --- Testing the updated Communication Module ---

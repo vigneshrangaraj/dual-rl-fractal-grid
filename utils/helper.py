@@ -88,6 +88,52 @@ class Helper:
         return action_vector
 
     @staticmethod
+    def flatten_secondary_state(stete_dict):
+        """
+        Expected state_dict:
+          {
+            "voltage": float,
+            "delta": float,
+            "i_q": float,
+            "i_d": float,
+            "reactive_power": float,
+          }
+        Returns:
+          A numpy array representing the flattened state vector.
+        """
+        state_vector = [
+            stete_dict.get("voltage", 0.0),
+            stete_dict.get("delta", 0.0),
+            stete_dict.get("i_q", 0.0),
+            stete_dict.get("i_d", 0.0),
+            stete_dict.get("reactive_power", 0.0)
+        ]
+        return np.array(state_vector, dtype=np.float32)
+
+    @staticmethod
+    def unpack_secondary_state(state_vector):
+        """
+        Expected state_vector:
+          A numpy array of shape (num_secondary_agents, 5) where each row corresponds to a secondary agent's state.
+
+        Returns:
+          A list of dicts, each containing the state for a secondary agent.
+        """
+        num_secondary_agents = state_vector.shape[0]
+        states = []
+
+        for i in range(num_secondary_agents):
+            states.append({
+                "voltage": state_vector[i, 0],
+                "delta": state_vector[i, 1],
+                "i_q": state_vector[i, 2],
+                "i_d": state_vector[i, 3],
+                "reactive_power": state_vector[i, 4]
+            })
+
+        return states
+
+    @staticmethod
     def unpack_tertiary_action(action_vector, switch_set):
         """
           A dict with keys:

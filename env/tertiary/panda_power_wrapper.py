@@ -165,7 +165,8 @@ class PandaPowerWrapper:
         # print(net)
         #
         # print("=== DIAGNOSTIC ===")
-        # diagnostic_result = pp.diagnostic(net, report_style=None, silence_warnings=True)
+        # diagnostic_result = pp.diagnostic(net, report_style=None, silence_warnings=False)
+        # print(diagnostic_result)
         # for key, value in diagnostic_result.items():
         #     print(f"--- {key} ---")
         #     print(value)
@@ -179,7 +180,8 @@ class PandaPowerWrapper:
         # print(f"Unsupplied buses: {unsupplied_gens}")
 
         try:
-            pp.runpp(net, algorithm="nr", max_iteration=50, calculate_voltage_angles=True, tolerance_mva=1e-2, enforce_q_lims=True)
+            print("=== RUNNING POWER FLOW ===")
+            pp.runpp(net, algorithm="nr",check_connectivity=True, max_iteration=100, calculate_voltage_angles=True, tolerance_mva=1e-2, enforce_q_lims=True)
         except Exception as e:
             print(f"Unified power flow failed: {e}")
             inv_voltages = [2] * len(net.res_bus.vm_pu)

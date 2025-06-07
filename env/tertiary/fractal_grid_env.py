@@ -3,9 +3,13 @@
 import numpy as np
 import logging
 
+from pandapower.plotting import plot_loading
+
 from env.tertiary.microgrid import MicroGrid
 from env.tertiary.panda_power_wrapper import PandaPowerWrapper
 import pandapower as pp
+from pandapower import toolbox
+import pandapower.plotting.simple_plot as plotly
 import pandas as pd
 
 
@@ -111,8 +115,10 @@ class FractalGridEnv:
                 self.index_map[0]['switch'] = { k: k for k in range(len(self.net.switch))}
                 self.index_map[0]['shunt'] = { k: k for k in range(len(self.net.shunt))}
                 self.index_map[0]['storage'] = { k: k for k in range(len(self.net.storage))}
-                self.index_map[0]['solar_gen'] = { k: k for k in range(len(self.net.gen)) if self.net.gen['name'].startswith("Solar_")}
-                self.index_map[0]['wind_gen'] = { k: k for k in range(len(self.net.gen)) if self.net.gen['name'].startswith("Wind_")}
+                self.index_map[0]['solar_gen'] = {k: k for k in range(len(self.net.gen)) if
+                                                  self.net.gen.loc[k, 'name'].startswith("Solar_")}
+                self.index_map[0]['wind_gen'] = {k: k for k in range(len(self.net.gen)) if
+                                                 self.net.gen.loc[k, 'name'].startswith("Wind_")}
             else:
                 self._merge_networks(self.net, microgrid.net, i)
         for i in range(self.num_microgrids):
@@ -129,7 +135,7 @@ class FractalGridEnv:
 
                 # Add the switch to the set (only if it hasn't been added before)
                 switch_set.add(switch_name)
-                self._create_tie_switch(i, left_child, self.V_ref)
+                self._create_tie_switch(i, left_child)
 
             if right_child < self.num_microgrids:
                 # Create a single bi-directional switch (consistent naming based on min/max index)
@@ -141,9 +147,14 @@ class FractalGridEnv:
                 switch_set.add(switch_name)
 
         total_switches = len(switch_set)
+        #self.plot_network()
         return microgrids, total_switches, switch_set
 
-    def _create_tie_switch(self, mg1_idx, mg2_idx, base_voltage):
+    def plot_network(self):
+        plotly(self.net, respect_switches=True, plot_loads=True, plot_sgens=True,
+                             plot_line_switches=True)
+
+    def _create_tie_switch(self, mg1_idx, mg2_idx):
         """
         Create a tie switch between two microgrids.
 
@@ -152,31 +163,28 @@ class FractalGridEnv:
             mg2_idx: Index of second microgrid
             base_voltage: Base voltage for the connection (kV)
         """
-        # Find appropriate buses to connect in each microgrid
-        mg1 = self.microgrids[mg1_idx]
-        mg2 = self.microgrids[mg2_idx]
 
-        # Create buses for the tie connection
-        bus1_idx = pp.create_bus(self.net, vn_kv=base_voltage, name=f"Tie Bus MG{mg1_idx}")
-        bus2_idx = pp.create_bus(self.net, vn_kv=base_voltage, name=f"Tie Bus MG{mg2_idx}")
+        mg1_indx_lookup_max = max(self.index_map[mg1_idx]['bus'].values())
+        mg2_indx_lookup_max = max(self.index_map[mg2_idx]['bus'].values())
 
-        # Connect these buses to their respective microgrids
-        # In a real implementation, you'd need to connect to appropriate existing buses
+        # # create a tieline
+        line_idx = pp.create_line(self.net,
+                                  from_bus=mg1_indx_lookup_max,
+                                  to_bus=mg2_indx_lookup_max,
+                                  length_km=5,
+                                  std_type="NA2XS2Y 1x240 RM/25 12/20 kV",
+                                  name="Tie Line")
 
-        # Create a tie line between the two buses
-        line_idx = pp.create_line(self.net, from_bus=bus1_idx, to_bus=bus2_idx,
-                                  length_km=10, std_type="N2XS(FL)2Y 1x300 RM/35 64/110 kV",
-                                  name=f"Tie Line MG{mg1_idx}-MG{mg2_idx}")
-        self.tie_lines.append(line_idx)
+        # create a switch
+        switch_idx = pp.create_switch(self.net,
+                                      bus=mg1_indx_lookup_max,
+                                      element=line_idx,
+                                      et="l",
+                                      type="LBS",
+                                      closed=True,
+                                      name="Tie Switch")
 
-        # Create a switch on the tie line (initially open)
-        switch_idx = pp.create_switch(self.net, bus=bus1_idx, element=line_idx,
-                                      et="l", type="LBS", closed=False,
-                                      name=f"Tie Switch MG{mg1_idx}-MG{mg2_idx}")
-
-        self.tie_switch_index_map [(mg1_idx, mg2_idx)] = switch_idx
-
-        return switch_idx
+        self.tie_switch_index_map[(mg1_idx, mg2_idx)] = switch_idx
 
     def operate_tie_switch(self, from_mg, to_mg, closed):
         """
@@ -186,9 +194,11 @@ class FractalGridEnv:
             switch_idx: Index of the switch to operate
             closed: Boolean indicating whether to close (True) or open (False) the switch
         """
-        switch_idx = self.tie_switch_index_map[(from_mg, to_mg)]
-        if switch_idx is not None:
-            self.net.switch.at[switch_idx, 'closed'] = closed == 1
+        switch_idx1 = self.tie_switch_index_map[(from_mg, to_mg)]
+        if switch_idx1 is not None:
+            print(f"Operating tie switch {switch_idx1} between microgrids {from_mg} and {to_mg} to {'closed' if closed == 1 else 'open'}")
+            self.net.switch.at[switch_idx1, 'closed'] = closed == 1
+
 
     def _merge_networks(self, main_net, new_net, mg_id):
         """
@@ -202,169 +212,189 @@ class FractalGridEnv:
         Returns:
             Dictionary of index mappings from new_net to main_net
         """
+
         # Dictionary to store the mapping between old and new indices
-        index_map = self.index_map
-        index_map[mg_id] = {
-            'bus': {},
-            'line': {},
-            'trafo': {},
-            'load': {},
-            'gen': {},
-            'ext_grid': {},
-            'switch': {},
-            'shunt': {},
-            'storage': {}
-        }
+        combined_net, index_map = toolbox.merge_nets(main_net, new_net,
+                                                     validate=True, return_net2_reindex_lookup=True)
+        self.index_map[mg_id] = index_map
+        self.net = combined_net
 
-        # 1. Copy buses and store the index mapping
-        for i, bus in new_net.bus.iterrows():
-            # Create a copy of the bus parameters as a dictionary
-            bus_data = bus.to_dict()
-            # Remove the index since it will be auto-assigned in the main network
-            if 'index' in bus_data:
-                del bus_data['index']
-            # Create new bus in main network
-            new_idx = pp.create_bus(main_net, **bus_data)
-            # Store the mapping
-            index_map['bus'][i] = new_idx
 
-        # 2. Copy lines
-        for i, line in new_net.line.iterrows():
-            line_data = line.to_dict()
-            if 'index' in line_data:
-                del line_data['index']
-
-            # Update bus references using the mapping
-            if 'from_bus' in line_data:
-                line_data['from_bus'] = index_map['bus'][line_data['from_bus']]
-            if 'to_bus' in line_data:
-                line_data['to_bus'] = index_map['bus'][line_data['to_bus']]
-
-            new_idx = pp.create_line(main_net, **line_data)
-            index_map['line'][i] = new_idx
-
-        # 3. Copy transformers
-        if hasattr(new_net, 'trafo'):
-            for i, trafo in new_net.trafo.iterrows():
-                trafo_data = trafo.to_dict()
-                if 'index' in trafo_data:
-                    del trafo_data['index']
-
-                # Update bus references
-                if 'hv_bus' in trafo_data:
-                    trafo_data['hv_bus'] = index_map['bus'][trafo_data['hv_bus']]
-                if 'lv_bus' in trafo_data:
-                    trafo_data['lv_bus'] = index_map['bus'][trafo_data['lv_bus']]
-
-                new_idx = pp.create_transformer(main_net, **trafo_data)
-                index_map['trafo'][i] = new_idx
-
-        # 4. Copy loads
-        if hasattr(new_net, 'load'):
-            for i, load in new_net.load.iterrows():
-                load_data = load.to_dict()
-                if 'index' in load_data:
-                    del load_data['index']
-
-                # Update bus reference
-                if 'bus' in load_data:
-                    load_data['bus'] = index_map['bus'][load_data['bus']]
-
-                new_idx = pp.create_load(main_net, **load_data)
-                index_map['load'][i] = new_idx
-
-        # 5. Copy generators
-        if hasattr(new_net, 'gen'):
-            for i, gen in new_net.gen.iterrows():
-                gen_data = gen.to_dict()
-                if 'index' in gen_data:
-                    del gen_data['index']
-
-                # Update bus reference
-                if 'bus' in gen_data:
-                    gen_data['bus'] = index_map['bus'][gen_data['bus']]
-
-                new_idx = pp.create_gen(main_net, **gen_data)
-                index_map['gen'][i] = new_idx
-                if gen_data['name'].startswith("Solar_"):
-                    index_map['solar_gen'][i] = new_idx
-                elif gen_data['name'].startswith("Wind_"):
-                    index_map['wind_gen'][i] = new_idx
-
-        # 6. Copy external grids (with modified names to avoid conflicts)
-        if hasattr(new_net, 'ext_grid'):
-            for i, ext_grid in new_net.ext_grid.iterrows():
-                ext_grid_data = ext_grid.to_dict()
-                if 'index' in ext_grid_data:
-                    del ext_grid_data['index']
-
-                # Update bus reference
-                if 'bus' in ext_grid_data:
-                    ext_grid_data['bus'] = index_map['bus'][ext_grid_data['bus']]
-
-                # Modify name to avoid conflicts
-                if 'name' in ext_grid_data:
-                    ext_grid_data['name'] = f"{ext_grid_data['name']}_merged"
-
-                # For merged networks, only keep one external grid active
-                # Set others as out of service
-                ext_grid_data['in_service'] = False
-
-                new_idx = pp.create_ext_grid(main_net, **ext_grid_data)
-                index_map['ext_grid'][i] = new_idx
-
-        # 7. Copy switches
-        if hasattr(new_net, 'switch'):
-            for i, switch in new_net.switch.iterrows():
-                switch_data = switch.to_dict()
-                if 'index' in switch_data:
-                    del switch_data['index']
-
-                # Update references based on element type
-                if 'bus' in switch_data:
-                    switch_data['bus'] = index_map['bus'][switch_data['bus']]
-
-                if 'element' in switch_data and 'et' in switch_data:
-                    et = switch_data['et']
-                    if et == 'b':  # bus-bus switch
-                        switch_data['element'] = index_map['bus'][switch_data['element']]
-                    elif et == 'l':  # line switch
-                        switch_data['element'] = index_map['line'][switch_data['element']]
-                    elif et == 't':  # transformer switch
-                        switch_data['element'] = index_map['trafo'][switch_data['element']]
-
-                new_idx = pp.create_switch(main_net, **switch_data)
-                index_map['switch'][i] = new_idx
-
-        # 8. Copy shunts
-        if hasattr(new_net, 'shunt'):
-            for i, shunt in new_net.shunt.iterrows():
-                shunt_data = shunt.to_dict()
-                if 'index' in shunt_data:
-                    del shunt_data['index']
-
-                # Update bus reference
-                if 'bus' in shunt_data:
-                    shunt_data['bus'] = index_map['bus'][shunt_data['bus']]
-
-                new_idx = pp.create_shunt(main_net, **shunt_data)
-                index_map['shunt'][i] = new_idx
-
-        # 9. Copy storage units
-        if hasattr(new_net, 'storage'):
-            for i, storage in new_net.storage.iterrows():
-                storage_data = storage.to_dict()
-                if 'index' in storage_data:
-                    del storage_data['index']
-
-                # Update bus reference
-                if 'bus' in storage_data:
-                    storage_data['bus'] = index_map['bus'][storage_data['bus']]
-
-                new_idx = pp.create_storage(main_net, **storage_data)
-                index_map['storage'][i] = new_idx
-
-        return index_map
+    # def _merge_networks(self, main_net, new_net, mg_id):
+    #     """
+    #     Merge a new microgrid network into the main network by copying all elements
+    #     from new_net to main_net with appropriate index mapping.
+    #
+    #     Args:
+    #         main_net: The main pandapower network to merge into
+    #         new_net: The new pandapower network to merge from
+    #
+    #     Returns:
+    #         Dictionary of index mappings from new_net to main_net
+    #     """
+    #     # Dictionary to store the mapping between old and new indices
+    #     index_map = self.index_map
+    #     index_map[mg_id] = {
+    #         'bus': {},
+    #         'line': {},
+    #         'trafo': {},
+    #         'load': {},
+    #         'gen': {},
+    #         'ext_grid': {},
+    #         'switch': {},
+    #         'shunt': {},
+    #         'storage': {}
+    #     }
+    #
+    #     # 1. Copy buses and store the index mapping
+    #     for i, bus in new_net.bus.iterrows():
+    #         # Create a copy of the bus parameters as a dictionary
+    #         bus_data = bus.to_dict()
+    #         # Remove the index since it will be auto-assigned in the main network
+    #         if 'index' in bus_data:
+    #             del bus_data['index']
+    #         # Create new bus in main network
+    #         new_idx = pp.create_bus(main_net, **bus_data)
+    #         # Store the mapping
+    #         index_map['bus'][i] = new_idx
+    #
+    #     # 2. Copy lines
+    #     for i, line in new_net.line.iterrows():
+    #         line_data = line.to_dict()
+    #         if 'index' in line_data:
+    #             del line_data['index']
+    #
+    #         # Update bus references using the mapping
+    #         if 'from_bus' in line_data:
+    #             line_data['from_bus'] = index_map['bus'][line_data['from_bus']]
+    #         if 'to_bus' in line_data:
+    #             line_data['to_bus'] = index_map['bus'][line_data['to_bus']]
+    #
+    #         new_idx = pp.create_line(main_net, **line_data)
+    #         index_map['line'][i] = new_idx
+    #
+    #     # 3. Copy transformers
+    #     if hasattr(new_net, 'trafo'):
+    #         for i, trafo in new_net.trafo.iterrows():
+    #             trafo_data = trafo.to_dict()
+    #             if 'index' in trafo_data:
+    #                 del trafo_data['index']
+    #
+    #             # Update bus references
+    #             if 'hv_bus' in trafo_data:
+    #                 trafo_data['hv_bus'] = index_map['bus'][trafo_data['hv_bus']]
+    #             if 'lv_bus' in trafo_data:
+    #                 trafo_data['lv_bus'] = index_map['bus'][trafo_data['lv_bus']]
+    #
+    #             new_idx = pp.create_transformer(main_net, **trafo_data)
+    #             index_map['trafo'][i] = new_idx
+    #
+    #     # 4. Copy loads
+    #     if hasattr(new_net, 'load'):
+    #         for i, load in new_net.load.iterrows():
+    #             load_data = load.to_dict()
+    #             if 'index' in load_data:
+    #                 del load_data['index']
+    #
+    #             # Update bus reference
+    #             if 'bus' in load_data:
+    #                 load_data['bus'] = index_map['bus'][load_data['bus']]
+    #
+    #             new_idx = pp.create_load(main_net, **load_data)
+    #             index_map['load'][i] = new_idx
+    #
+    #     # 5. Copy generators
+    #     if hasattr(new_net, 'gen'):
+    #         for i, gen in new_net.gen.iterrows():
+    #             gen_data = gen.to_dict()
+    #             if 'index' in gen_data:
+    #                 del gen_data['index']
+    #
+    #             # Update bus reference
+    #             if 'bus' in gen_data:
+    #                 gen_data['bus'] = index_map['bus'][gen_data['bus']]
+    #
+    #             new_idx = pp.create_gen(main_net, **gen_data)
+    #             index_map['gen'][i] = new_idx
+    #             if gen_data['name'].startswith("Solar_"):
+    #                 index_map['solar_gen'][i] = new_idx
+    #             elif gen_data['name'].startswith("Wind_"):
+    #                 index_map['wind_gen'][i] = new_idx
+    #
+    #     # 6. Copy external grids (with modified names to avoid conflicts)
+    #     if hasattr(new_net, 'ext_grid'):
+    #         for i, ext_grid in new_net.ext_grid.iterrows():
+    #             ext_grid_data = ext_grid.to_dict()
+    #             if 'index' in ext_grid_data:
+    #                 del ext_grid_data['index']
+    #
+    #             # Update bus reference
+    #             if 'bus' in ext_grid_data:
+    #                 ext_grid_data['bus'] = index_map['bus'][ext_grid_data['bus']]
+    #
+    #             # Modify name to avoid conflicts
+    #             if 'name' in ext_grid_data:
+    #                 ext_grid_data['name'] = f"{ext_grid_data['name']}_merged"
+    #
+    #             # For merged networks, only keep one external grid active
+    #             # Set others as out of service
+    #             ext_grid_data['in_service'] = False
+    #
+    #             new_idx = pp.create_ext_grid(main_net, **ext_grid_data)
+    #             index_map['ext_grid'][i] = new_idx
+    #
+    #     # 7. Copy switches
+    #     if hasattr(new_net, 'switch'):
+    #         for i, switch in new_net.switch.iterrows():
+    #             switch_data = switch.to_dict()
+    #             if 'index' in switch_data:
+    #                 del switch_data['index']
+    #
+    #             # Update references based on element type
+    #             if 'bus' in switch_data:
+    #                 switch_data['bus'] = index_map['bus'][switch_data['bus']]
+    #
+    #             if 'element' in switch_data and 'et' in switch_data:
+    #                 et = switch_data['et']
+    #                 if et == 'b':  # bus-bus switch
+    #                     switch_data['element'] = index_map['bus'][switch_data['element']]
+    #                 elif et == 'l':  # line switch
+    #                     switch_data['element'] = index_map['line'][switch_data['element']]
+    #                 elif et == 't':  # transformer switch
+    #                     switch_data['element'] = index_map['trafo'][switch_data['element']]
+    #
+    #             new_idx = pp.create_switch(main_net, **switch_data)
+    #             index_map['switch'][i] = new_idx
+    #
+    #     # 8. Copy shunts
+    #     if hasattr(new_net, 'shunt'):
+    #         for i, shunt in new_net.shunt.iterrows():
+    #             shunt_data = shunt.to_dict()
+    #             if 'index' in shunt_data:
+    #                 del shunt_data['index']
+    #
+    #             # Update bus reference
+    #             if 'bus' in shunt_data:
+    #                 shunt_data['bus'] = index_map['bus'][shunt_data['bus']]
+    #
+    #             new_idx = pp.create_shunt(main_net, **shunt_data)
+    #             index_map['shunt'][i] = new_idx
+    #
+    #     # 9. Copy storage units
+    #     if hasattr(new_net, 'storage'):
+    #         for i, storage in new_net.storage.iterrows():
+    #             storage_data = storage.to_dict()
+    #             if 'index' in storage_data:
+    #                 del storage_data['index']
+    #
+    #             # Update bus reference
+    #             if 'bus' in storage_data:
+    #                 storage_data['bus'] = index_map['bus'][storage_data['bus']]
+    #
+    #             new_idx = pp.create_storage(main_net, **storage_data)
+    #             index_map['storage'][i] = new_idx
+    #
+    #     return index_map
 
     def reset(self):
         self.current_step = 0
@@ -380,6 +410,7 @@ class FractalGridEnv:
 
         # Total real power demand
         total_load = net.res_load.p_mw.sum()
+        total_battery_charge = abs(net.res_storage.p_mw[net.res_storage.p_mw < 0].sum())
 
         # Total real power generation from:
         gen_power = net.res_gen.p_mw[net.gen.p_mw > 0].sum()
@@ -388,7 +419,7 @@ class FractalGridEnv:
         total_supply = gen_power + storage_discharge
 
         # Net power shortfall (if positive)
-        deficit = total_load - total_supply
+        deficit = total_load + total_battery_charge - total_supply
 
         overloaded = deficit > 1e-4  # tolerance
         overloaded_amount = max(0, deficit)
@@ -418,6 +449,7 @@ class FractalGridEnv:
         """
 
         der_gens = self.index_map[mg_id]['gen']
+        #print(f"Setting voltage setpoint for DERs in microgrid {mg_id} at inverter index {der_gens[inverter_idx]} to {voltage_setpoint}")
         self.net.gen.loc[der_gens[inverter_idx], "vm_pu"] = voltage_setpoint
 
     def step(self, tertiary_action, time_step):
@@ -426,15 +458,24 @@ class FractalGridEnv:
         microgrid_actions = tertiary_action.get("microgrids", None)
         for i, mg in enumerate(self.microgrids):
             dispatch = microgrid_actions[i].get("dispatch_power", None)
+            print(f"Apply dispatch and load for timestep {time_step} for microgrid {i}")
             self.apply_load_p_mv_by_timestep(time_step, i)
             self.apply_dispatch(dispatch, time_step, i)
             battery_operation = microgrid_actions[i].get("battery_operation", None)
             self.apply_battery_operation(battery_operation, i)
 
-        # Update tie-line statuses if provided.
-        new_tie_lines = tertiary_action.get("tie_lines", None)
-        if new_tie_lines is not None:
-            self.tie_lines = new_tie_lines
+        tie_line_actions = tertiary_action.get("tie_lines", None)
+        if tie_line_actions is not None:
+            for tie_line_action in tie_line_actions:
+                from_mg_id = tie_line_action[0]
+                to_mg_id = tie_line_action[1]
+                closed = tie_line_action[2]
+                # make the closed to be either 1 or 0. The values are in the range [0, 1]
+                if closed <= 0:
+                    closed = 0
+                elif closed > 0:
+                    closed = 1
+                self.operate_tie_switch(from_mg_id, to_mg_id, closed)
 
         # Compute the economic cost across microgrids.
         econ_cost = self._calculate_economic_cost()
@@ -530,7 +571,6 @@ class FractalGridEnv:
 
         # Update network
         self.net.storage.loc[storage_idx, "p_mw"] = battery_operation * self.net.storage.loc[storage_idx, "max_e_mwh"]
-        self.net.storage.loc[storage_idx, "initial_e_mwh"] = new_energy
         self.net.storage.loc[storage_idx, "soc_percent"] = new_soc * 100
 
         print("Battery operation applied, dispatching energy:" , self.net.storage.loc[storage_idx, "p_mw"], "MW")
@@ -556,7 +596,7 @@ class FractalGridEnv:
             measured_voltage = avg_volt
         except KeyError as e:
             # print err
-            print(f"KeyError: {e}")
+            print(f"get_state_by_mg_id getting voltage KeyError: {e}")
             logging.error(f"Microgrid ID {mg_id} not found in index map.")
             measured_voltage = 5
 
@@ -565,7 +605,7 @@ class FractalGridEnv:
             grid_power = self.net.res_ext_grid.p_mw[vals].sum()
         except KeyError as e:
             # print err
-            print(f"KeyError: {e}")
+            print(f"get_state_by_mg_id KeyError: {e}")
             logging.error(f"External grid ID {mg_id} not found in index map.")
             grid_power = 0
 

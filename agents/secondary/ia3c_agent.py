@@ -79,5 +79,22 @@ class IA3CAgent:
 
         return total_loss.item()
 
+    def apply_critic_consensus(self, neighbor_agents, eta=0.01):
+        """
+        Update the critic parameters using consensus from neighbors.
+
+        Args:
+            neighbor_agents (list): List of IA3CAgent instances that are neighbors.
+            eta (float): Consensus learning rate.
+        """
+        with torch.no_grad():
+            for param_name, param in self.network.named_parameters():
+                if 'value_head' in param_name:  # Only apply consensus to critic head
+                    consensus_term = sum(
+                        neighbor.network.state_dict()[param_name] - param.data
+                        for neighbor in neighbor_agents
+                    ) / len(neighbor_agents)
+                    param.data += eta * consensus_term
+
     def save(self, filename):
         torch.save(self.network.state_dict(), filename)

@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
+from env.secondary.comm import CommunicationModule
 from plotter.reward_plotter import RewardPlotter
 from plotter.action_state_plotter import ActionStatePlotter
 from utils.config import Config
@@ -62,6 +63,8 @@ def main(tertiary_action=None):
     # Initialize the plotter
     plotter = RewardPlotter(len(secondary_agents))
 
+    comm_module = CommunicationModule(config)
+
     actions_plotter = ActionStatePlotter(
         num_secondary_agents=len(secondary_agents),
         num_tertiary_actions=3,
@@ -104,6 +107,12 @@ def main(tertiary_action=None):
                 new_sec_state, sec_rewards, sec_done, sec_info = dual_env.secondary_env.step(secondary_actions,
                                                                                              dual_env.tertiary_env,
                                                                                              ter_action.get("tie_lines", None))
+
+                for i, agent in enumerate(secondary_agents):
+                    neighbors = comm_module.get_neighbors(i)
+                    neighbor_agents = [secondary_agents[n_id] for n_id in neighbors]
+                    agent.apply_critic_consensus(neighbor_agents)
+
                 sec_total_reward += np.mean(sec_rewards)
                 convergences.append(sec_info.get("is_converged", False))
                 
@@ -171,13 +180,13 @@ def main(tertiary_action=None):
                          f"Secondary actions: {secondary_actions}, Overall reward: {overall_reward:.2f}")
             print(f"Overall step: Episode {ep + 1}, Step {time_step}: Tertiary reward: {ter_rewards:.2f}, "
                          f"Secondary rewards: {sec_rewards}, Overall reward: {overall_reward:.2f}")
+            if ter_done:
+                print(f"Episode {ep + 1}, Step {time_step}: Episode done")
+                time_step = 0
             done = ter_done
 
         # print bess soc
         print(f"BESS SOC for day: {bess_soc_for_day}")
-
-        # Normalize secondary rewards by number of steps
-        secondary_episode_rewards = [r / 24 for r in secondary_episode_rewards]
         
         # Update plots
         actions_plotter.update(ep + 1, ter_action, secondary_actions, ter_state, sec_state)

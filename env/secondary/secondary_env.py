@@ -19,7 +19,10 @@ class SecondaryEnv:
 
         self.V_min = getattr(config, "V_min", 0.5)
         self.V_max = getattr(config, "V_max", 2.0)
+        self.fn = der_4()
+        self.num_agents = self.fn.num_secondary_agents
         self.max_voltage_change = getattr(config, "max_voltage_change", 0.05)
+        self.adjacency_matrix = self.default_ring_topology(self.num_agents * self.num_microgrids)
 
         self.config = config
 
@@ -27,8 +30,6 @@ class SecondaryEnv:
 
         inv_buses = self.fn.combine_bus_inv_idx
         self.num_agents = self.fn.num_secondary_agents
-        self.adjacency_matrix = getattr(config, "adjacency_matrix",
-        self.default_ring_topology(self.num_agents * self.num_microgrids))
 
         self.inverters = []
         for i in range(self.num_microgrids):
@@ -36,9 +37,18 @@ class SecondaryEnv:
                 inverter = Inverter(config, inv_buses[j], j, i)
                 self.inverters.append(inverter)
 
+        self.comm = CommunicationModule(config)
+
         self.rewards = []
         self.voltage_violations = []
         self.reset()
+
+    def default_ring_topology(self, n):
+        adj = np.zeros((n, n))
+        for i in range(n):
+            adj[i][(i - 1) % n] = 1
+            adj[i][(i + 1) % n] = 1
+        return adj
 
     def reset(self):
         self.states = []
@@ -75,7 +85,7 @@ class SecondaryEnv:
             inverter = self.inverters[i]
             measured_voltage = inverter.measured_voltage
 
-            neighbor_voltages = CommunicationModule.get_neighbor_voltages(i, self.states, self.adjacency_matrix)
+            neighbor_voltages = self.comm.get_neighbor_voltages(i, self.states, self.adjacency_matrix)
             consensus_error = sum([(measured_voltage - vj) for vj in neighbor_voltages])
             consensus_error = np.clip(consensus_error, -0.1, 0.1)
             consensus_errors.append(consensus_error)
@@ -88,7 +98,7 @@ class SecondaryEnv:
 
             for mg in tertiary_env.microgrids:
                 if mg.mg_id == inverter.mg_id:
-                    tertiary_env.set_voltage_setpoint_for_der(action, i, mg.mg_id)
+                    tertiary_env.set_voltage_setpoint_for_der(action, inverter.inverter_id, mg.mg_id)
                     break
 
             new_inverter_state = inverter.update(V_ref=action, measured_voltage=measured_voltage)
@@ -96,21 +106,15 @@ class SecondaryEnv:
 
         net, inv_voltages = pw.run_power_flow(tertiary_env.net, tie_lines)
 
-        index_map = tertiary_env.index_map
+        # Set inverter measured voltage
         for i, mg in enumerate(tertiary_env.microgrids):
-            gen_idx = index_map[mg.mg_id]["gen"].values()
-            for j in range(len(gen_idx)):
-                self.inverters[j].measured_voltage = inv_voltages[gen_idx[j]]
-
-        # set inverter measured voltage
-        for i, mg in enumerate(tertiary_env.microgrids):
-            for j in range(len(mg.combine_bus_inv_idx)):
-                if mg.combine_bus_inv_idx[j] == self.inverters[i].bus_id:
-                    self.inverters[i].measured_voltage = inv_voltages[mg.combine_bus_inv_idx[j]]
-                    break
-        for i in range(len(tertiary_env.microgrids[0].combine_bus_inv_idx)):
-            inverter = self.inverters[i]
-            inverter.measured_voltage = inv_voltages[tertiary_env.microgrids[0].combine_bus_inv_idx[i]]
+            for j, bus_idx in enumerate(mg.combine_bus_inv_idx):
+                inverter_idx = j + (i * self.num_agents)
+                voltage_idx = bus_idx + (i * self.num_agents)
+                if (i == 1):
+                    voltage_idx = voltage_idx + (self.num_agents)
+                #print(f"Setting inverter {inverter_idx} from {voltage_idx} in inv_voltages measured voltage to {inv_voltages[voltage_idx]}")
+                self.inverters[inverter_idx].measured_voltage = inv_voltages[voltage_idx]
 
         for i, inverter in enumerate(self.inverters):
             reward = 0
@@ -132,21 +136,50 @@ class SecondaryEnv:
 
             v_i = new_voltage
             if 0.98 <= v_i <= 1.02:
-                reward += 50.0
+                reward += 1 - abs(1.0 - v_i)
             elif 0.95 <= v_i < 0.98 or 1.02 < v_i <= 1.05:
                 reward += 0.2 - abs(1.0 - v_i)
-                violations += 1
             elif 0.9 <= v_i < 0.95 or 1.05 < v_i <= 1.1:
                 reward += -2.0 * abs(1.0 - v_i)
-                violations += 1
             else:
-                reward += -100.0
+                reward += -10
                 violations += 1
 
             reward -= self.consensus_penalty * (consensus_error ** 2)
 
             self.rewards.append(reward)
             self.voltage_violations.append(violations)
+
+        # for i, inverter in enumerate(self.inverters):
+        #     reward = 0
+        #     violations = 0
+        #     new_voltage = inv_voltages[i]
+        #
+        #     action = new_actions[i]
+        #     new_inverter_state = new_inverter_states[i]
+        #
+        #     new_state = {
+        #         "voltage": new_voltage,
+        #         "reactive_power": action,
+        #         "i_d": new_inverter_state["i_d"],
+        #         "i_q": new_inverter_state["i_q"],
+        #         "delta": new_inverter_state["delta"]
+        #     }
+        #     next_states.append(new_state)
+        #     consensus_error = consensus_errors[i]
+        #
+        #     # Quadratic reward centered at 1.0 pu voltage
+        #     reward += 50 * np.exp(-((new_voltage - 1.0) ** 2) / 0.0005)
+        #
+        #     # Apply a violation counter if outside limits
+        #     if new_voltage < 0.9 or new_voltage > 1.1:
+        #         violations += 1
+        #
+        #     # Consensus error penalty
+        #     reward -= self.consensus_penalty * (consensus_error ** 2)
+        #
+        #     self.rewards.append(reward)
+        #     self.voltage_violations.append(violations)
 
         self.states = next_states
         self.time_step += 1
@@ -160,7 +193,7 @@ class SecondaryEnv:
         if done:
             time_penalty = self.time_step / self.max_steps  # normalized: 0 (fast) to 1 (slow)
             bonus = 1.0 - time_penalty  # faster = higher bonus, capped at 1.0
-            self.rewards = [r + bonus for r in self.rewards]
+            self.rewards = [r + ( bonus ) for r in self.rewards]
 
         new_energy = pw.check_islanded_balance(net)
 
@@ -168,10 +201,3 @@ class SecondaryEnv:
 
         print(f"==================Secondary step {self.time_step}: {np.mean(self.rewards)}")
         return self.states, self.rewards, done, info
-
-    def default_ring_topology(self, n):
-        adj = np.zeros((n, n))
-        for i in range(n):
-            adj[i][(i - 1) % n] = 1
-            adj[i][(i + 1) % n] = 1
-        return adj
