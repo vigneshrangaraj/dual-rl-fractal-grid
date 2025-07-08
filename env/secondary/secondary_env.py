@@ -1,4 +1,6 @@
 import numpy as np
+from scipy.constants import value
+
 from env.secondary.comm import CommunicationModule
 from env.secondary.inverter import Inverter
 from env.tertiary.panda_power_wrapper import PandaPowerWrapper as pw
@@ -25,7 +27,7 @@ class SecondaryEnv:
 
         self.fn = der_4()
 
-        inv_buses = self.fn.combine_bus_inv_idx
+        self.inv_buses = self.fn.combine_bus_inv_idx
         self.num_agents = self.fn.num_secondary_agents
         self.adjacency_matrix = getattr(config, "adjacency_matrix",
         self.default_ring_topology(self.num_agents * self.num_microgrids))
@@ -33,7 +35,7 @@ class SecondaryEnv:
         self.inverters = []
         for i in range(self.num_microgrids):
             for j in range(self.num_agents):
-                inverter = Inverter(config, inv_buses[j], j, i)
+                inverter = Inverter(config, self.inv_buses[j], j, i)
                 self.inverters.append(inverter)
 
         self.rewards = []
@@ -98,7 +100,7 @@ class SecondaryEnv:
 
         index_map = tertiary_env.index_map
         for i, mg in enumerate(tertiary_env.microgrids):
-            gen_idx = index_map[mg.mg_id]["gen"].values()
+            gen_idx = self.inv_buses #index_map[mg.mg_id]["gen"].values()
             for j in range(len(gen_idx)):
                 self.inverters[j].measured_voltage = inv_voltages[gen_idx[j]]
 
@@ -131,7 +133,7 @@ class SecondaryEnv:
             consensus_error = consensus_errors[i]
 
             v_i = new_voltage
-            if 0.98 <= v_i <= 1.02:
+            if 0.90 <= v_i <= 1.02:
                 reward += 50.0
             elif 0.95 <= v_i < 0.98 or 1.02 < v_i <= 1.05:
                 reward += 0.2 - abs(1.0 - v_i)

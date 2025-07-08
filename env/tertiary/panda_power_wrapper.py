@@ -192,10 +192,16 @@ class PandaPowerWrapper:
         print("=== Voltage Results ===")
         print(net.res_bus.vm_pu)
         inv_voltages = net.res_bus.vm_pu.values
-        print("==== print total mv at load and gen =====")
+        print("==== print total mv at load and gen and storage =====")
         print(net.load.p_mw)
         print(net.gen.p_mw)
-
+        print(net.storage.p_mw)
+        print("=== Now res ===")
+        print(net.res_gen.p_mw)
+        print(net.res_load.p_mw)
+        print(net.res_storage.p_mw)
+        print("=== res_ext_grid ===")
+        print(net.res_ext_grid)
         return net, inv_voltages
 
 

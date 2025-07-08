@@ -51,6 +51,26 @@ class Helper:
         return torch.tensor(flat_state)
 
     @staticmethod
+    def add_to_aggregated_state(aggregated_state, state_dict):
+        """
+        Adds the microgrid states from state_dict to aggregated_state.
+        """
+        keys = ["bess_soc", "total_load", "grid_power", "der_generation", "measured_voltage"]
+        microgrids = state_dict.get("microgrids", [])
+        for mg in microgrids:
+            agg_microgrids = aggregated_state.get("microgrids", [])
+            for agg_mg in agg_microgrids:
+                for i in range(len(keys)):
+                    if (keys[i] == "bess_soc"):
+                        this_bess_soc = mg.get(keys[i], 0.0) + agg_mg.get(keys[i], 0.0)
+                        agg_mg[keys[i]] += this_bess_soc / 2
+                    else:
+                        agg_mg[keys[i]] += mg.get(keys[i], 0.0)
+
+        # Append the global timestep
+        aggregated_state["timestep"] = state_dict.get("timestep", 0)
+
+    @staticmethod
     def flatten_tertiary_action(action_dict):
         """
         Expected action_dict:

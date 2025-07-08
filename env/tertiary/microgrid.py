@@ -45,6 +45,7 @@ class MicroGrid:
         self.num_secondary_agents = der4_net.num_secondary_agents
         self.solar_buses = der4_net.solar_buses
         self.storage_idx = der4_net.get_storage_idx()
+        self.storage_bus_id = der4_net.bess_bus_id
 
         # populate base loads
         for i in range(self.num_buses):

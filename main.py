@@ -79,27 +79,63 @@ def main(tertiary_action=None):
         secondary_episode_rewards = [0.0 for _ in secondary_agents]
         secondary_episode_voltage_violations = [0 for _ in secondary_agents]
         bess_soc_for_day = []
+
+        # Initialize hidden and cell states
+        h_states = [torch.zeros(1, 1, 64) for _ in secondary_agents]
+        c_states = [torch.zeros(1, 1, 64) for _ in secondary_agents]
+        next_h_states = []
+        next_c_states = []
+        aggregated_ter_state = state.get("tertiary", None)
+
         while not done:
+            context_vectors = []
+
+            if (config.use_lstm):
+                for i in range(len(secondary_agents)):
+                    q_i = h_states[i].squeeze(0)
+                    others = [h_states[j].squeeze(0) for j in range(len(secondary_agents)) if j != i]
+                    context = compute_attention_context(q_i, others)
+                    context_vectors.append(context)
+
             ter_state = state.get("tertiary", None)
             micrigrid = ter_state.get("microgrids", None)[0]
             bess_soc_for_day.append(micrigrid.get("bess_soc", None))
             ter_action, ter_log_prob, ter_value = tertiary_agent.select_action(ter_state, dual_env.tertiary_env.switch_set)
             next_state, ter_rewards, ter_done, ter_info = dual_env.step(ter_action, time_step)
 
+            # add to aggregated state
+            helper.add_to_aggregated_state(aggregated_ter_state, next_state)
+
             sec_total_reward = 0.0
             sec_state = state.get("secondary", None)
             convergences = []
             steps_secondary_run = 0
+            this_secondary_episode_rewards = [0.0 for _ in secondary_agents]
             for _ in range(num_secondary_steps):
                 steps_secondary_run += 1
                 secondary_actions = []
                 secondary_log_probs = []
                 new_sec_states = []
-                for i, agent in enumerate(secondary_agents):
-                    agent_state = sec_state[i]
-                    sec_action, sec_log_prob, sec_value = agent.select_action(agent_state)
-                    secondary_actions.append(sec_action)
-                    secondary_log_probs.append(sec_log_prob)
+                if config.use_lstm:
+                    for i, agent in enumerate(secondary_agents):
+                        agent_state = sec_state[i]
+                        sec_action, sec_log_prob, next_h, next_c = agent.select_action(agent_state,
+                                                                                       (h_states[i], c_states[i]),
+                                                                                       context_vectors[i].view(1, -1))
+                        secondary_actions.append(sec_action)
+                        secondary_log_probs.append(sec_log_prob)
+
+                        next_h_states.append(next_h)
+                        next_c_states.append(next_c)
+
+                        h_states[i] = next_h
+                        c_states[i] = next_c
+                else:
+                    for i, agent in enumerate(secondary_agents):
+                        agent_state = sec_state[i]
+                        sec_action, sec_log_prob, sec_value = agent.select_action(agent_state)
+                        secondary_actions.append(sec_action)
+                        secondary_log_probs.append(sec_log_prob)
 
                 new_sec_state, sec_rewards, sec_done, sec_info = dual_env.secondary_env.step(secondary_actions,
                                                                                              dual_env.tertiary_env,
@@ -109,14 +145,40 @@ def main(tertiary_action=None):
                 
                 # Accumulate rewards for each secondary agent
                 for i, reward in enumerate(sec_rewards):
-                    secondary_episode_rewards[i] += reward
+                    this_secondary_episode_rewards[i] += reward
                 for i, violation in enumerate(sec_info.get("violations", [])):
                     secondary_episode_voltage_violations[i] += violation
                     
                 sec_state = new_sec_state
+
+                if config.use_lstm:
+                    for i, agent in enumerate(secondary_agents):
+                        agent.learn(
+                            state=sec_state[i],
+                            log_prob=secondary_log_probs[i],
+                            reward=sec_rewards[i],
+                            next_state=sec_state[i],
+                            done=sec_done,
+                            hidden=(h_states[i], c_states[i]),
+                            next_hidden=(next_h_states[i], next_c_states[i]),
+                            context_vector=context_vectors[i]
+                        )
+                else:
+                    for i, agent in enumerate(secondary_agents):
+                        agent.learn(
+                            state=sec_state[i],
+                            log_prob=secondary_log_probs[i],
+                            reward=sec_rewards[i],
+                            next_state=sec_state[i],
+                            done=sec_done
+                        )
+
                 if sec_done:
                     dual_env.secondary_env.time_step = 0
                     break
+
+
+                # done secondary steps
 
             for micrigrid in dual_env.tertiary_env.microgrids:
                 micrigrid.pf_net = sec_info.get("net", None)
@@ -125,20 +187,22 @@ def main(tertiary_action=None):
             # Normalize secondary rewards
             overall_reward = ter_rewards + config.alpha_sec * aggregated_sec_reward
 
-            for i, reward in enumerate(secondary_episode_rewards):
-                secondary_episode_rewards[i] = reward / steps_secondary_run
+            for i, reward in enumerate(this_secondary_episode_rewards):
+                reward = reward / steps_secondary_run
+                secondary_episode_rewards[i] += reward
 
             # Check for how much was borrwed from ext_grid.. if it is negative, it means we are borrowing
             # from the grid if positive, we are giving back to the grid
             # reward giving back and selling instead of borrowing
             p_mw = sec_info.get("new_energy", None)
             if p_mw is not None:
-                overall_reward += config.beta_ext_grid * p_mw
+                if p_mw < 0:
+                    # We are selling to the grid
+                    overall_reward += config.sell_ext_grid * abs(p_mw)
+                else:
+                    # We are borrowing from the grid
+                    overall_reward -= config.buy_ext_grid * p_mw
 
-            # Also check for load deficit
-            is_deficient, deficit = dual_env.tertiary_env.check_power_deficit(sec_info.get("net", None))
-            if is_deficient:
-                overall_reward -= config.beta_deficient * ( deficit * 100)
             episode_reward += overall_reward
 
             # Update agents
@@ -151,14 +215,7 @@ def main(tertiary_action=None):
                 done=ter_done
             )
 
-            for i, agent in enumerate(secondary_agents):
-                agent.learn(
-                    state=sec_state[i],
-                    log_prob=secondary_log_probs[i],
-                    reward=sec_rewards[i],
-                    next_state=sec_state[i],
-                    done=sec_done
-                )
+
 
             time_step += 1
             state = {
@@ -167,7 +224,7 @@ def main(tertiary_action=None):
             }
 
             # log progress and actions
-            print(f"Episode {ep + 1}, Step {time_step}: Tertiary action: {ter_action}, "
+            print(f"Episode {ep + 1}, Step {time_step}: Tertiary action: {ter_action}, Tertiary_state: {ter_state}, "
                          f"Secondary actions: {secondary_actions}, Overall reward: {overall_reward:.2f}")
             print(f"Overall step: Episode {ep + 1}, Step {time_step}: Tertiary reward: {ter_rewards:.2f}, "
                          f"Secondary rewards: {sec_rewards}, Overall reward: {overall_reward:.2f}")
@@ -180,7 +237,7 @@ def main(tertiary_action=None):
         secondary_episode_rewards = [r / 24 for r in secondary_episode_rewards]
         
         # Update plots
-        actions_plotter.update(ep + 1, ter_action, secondary_actions, ter_state, sec_state)
+        actions_plotter.update(ep + 1, ter_action, secondary_actions, aggregated_ter_state, sec_state)
         plotter.update(ep + 1, episode_reward, secondary_episode_rewards, secondary_episode_voltage_violations)
         
         # Save models periodically
@@ -204,6 +261,27 @@ def main(tertiary_action=None):
         
     plt.ioff()  # Turn off interactive mode
     plt.show()  # Keep the plot window open
+
+def compute_attention_context(q_i, others, scale=True):
+    """
+    Compute attention-based context from other hidden states
+    q_i: (1, d), others: list of (1, d)
+    """
+    if not others:
+        return torch.zeros_like(q_i)
+
+    k = torch.stack(others)           # (N-1, 1, d)
+    v = k.clone()                     # (N-1, 1, d)
+    q = q_i.unsqueeze(0).unsqueeze(0)  # (1, 1, d)
+
+    d_k = q.shape[-1]
+    scores = torch.matmul(q, k.transpose(-2, -1))  # (1, 1, N-1)
+    if scale:
+        scores = scores / (d_k ** 0.5)
+    weights = torch.softmax(scores, dim=-1)        # (1, 1, N-1)
+    context = torch.matmul(weights, v).squeeze(0).squeeze(0)  # (d,)
+    return context
+
 
 if __name__ == "__main__":
     try:

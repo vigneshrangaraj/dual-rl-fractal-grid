@@ -30,6 +30,7 @@ class FractalGridEnv:
         self.lambda_econ = getattr(config, "lambda_econ", 1.0)
         self.alpha_sec = getattr(config, "alpha_sec", 1.0)
         self.beta_volt = getattr(config, "beta_volt", 1.0)
+        self.load_disturbance_percent = getattr(config, "load_disturbance_percent", 0.1)
 
         self.index_map = {}
         self.tie_switch_index_map = {}
@@ -395,21 +396,18 @@ class FractalGridEnv:
 
         return overloaded, overloaded_amount
 
-    def apply_load_p_mv_by_timestep(self, time_step, mg_id):
+    def apply_load_p_mv_by_timestep(self, time_step, mg_id, episode_num=0):
         """
-        Get the load in MW at each bus for a given time step.
-        Add some randomness to the load to simulate real-world conditions.
+        Apply time-varying and episode-growing load with configurable disturbance percent.
         """
-        # Load is assumed to be a function of time_step
-        load_factor = 1.0 + 0.1 * np.sin(time_step / 10.0)
-
-        mg = self.microgrids[mg_id]
-
-        random_noise = np.random.normal(0, 0.02, size=len(mg.base_loads))
-        # Set the load at each bus
+        base_load = np.array(self.microgrids[mg_id].base_loads)
         buses = list(self.index_map[mg_id]['load'].values())
-        #mg.net.load.loc[buses, "p_mw"] = load_factor * mg.base_loads[buses] * (1 + random_noise[buses])
-        self.net.load.loc[buses, "p_mw"] = load_factor * np.array(mg.base_loads) * (1 + random_noise)
+
+        oscillation = 1.0 + 0.1 * np.sin(time_step / 10.0)  # short-term
+        drift = 1.0 + self.load_disturbance_percent  # long-term pressure
+
+        random_noise = np.random.normal(0, 0.02, size=len(base_load))
+        self.net.load.loc[buses, "p_mw"] = drift * oscillation * base_load * (1 + random_noise)
 
 
     def set_voltage_setpoint_for_der(self, voltage_setpoint, inverter_idx, mg_id):
@@ -440,8 +438,7 @@ class FractalGridEnv:
         econ_cost = self._calculate_economic_cost()
 
         # Compute the overall reward.
-        reward = (-self.lambda_econ * econ_cost +
-                  self.beta_volt)
+        reward = (-self.lambda_econ * econ_cost )
 
         self.current_step += 1
         if self.current_step >= self.max_steps:
@@ -509,12 +506,13 @@ class FractalGridEnv:
     def apply_battery_operation(self, battery_operation, mg_id):
         mg = self.microgrids[mg_id]
         storage_idx = self.index_map[mg_id]['storage'][self.microgrids[mg_id].storage_idx]
+        bus_storage_idx = self.microgrids[mg_id].storage_bus_id - 1
         max_e_mwh = self.net.storage.loc[storage_idx, "max_e_mwh"]
 
         # Convert SOC to stored energy
         stored_energy_mwh = mg.last_soc * max_e_mwh
 
-        energy_change = battery_operation * self.net.storage.loc[storage_idx, "max_e_mwh"]
+        energy_change = -battery_operation * max_e_mwh
 
         # Clamp the new energy within limits
         new_energy = np.clip(stored_energy_mwh + energy_change, 0.0, max_e_mwh)
@@ -527,6 +525,17 @@ class FractalGridEnv:
             return
 
         mg.last_soc = new_soc
+
+        # Basic voltage support: absorb or inject reactive power based on voltage
+        bus_vm = self.net.res_bus.vm_pu[bus_storage_idx]
+        if bus_vm > 1.05:
+            q_mvar = -0.5  # absorb reactive power
+        elif bus_vm < 0.95:
+            q_mvar = 0.5  # inject reactive power
+        else:
+            q_mvar = 0.0
+        self.net.storage.loc[storage_idx, "q_mvar"] = q_mvar
+
 
         # Update network
         self.net.storage.loc[storage_idx, "p_mw"] = battery_operation * self.net.storage.loc[storage_idx, "max_e_mwh"]
@@ -596,13 +605,13 @@ class FractalGridEnv:
 
             for i, row in gen_data.iterrows():
                 power = row["p_mw"]
-                total_cost += 10 * power
+                total_cost += 0.01 * power
 
         # BESS via storage
         if self.net is not None and "storage" in self.net and not self.net.storage.empty:
             for _, row in self.net.storage.iterrows():
                 power = abs(row["p_mw"])  # both charging/discharging = degradation
-                total_cost += 10 * power
+                total_cost += 0.01 * power
 
         return total_cost
 

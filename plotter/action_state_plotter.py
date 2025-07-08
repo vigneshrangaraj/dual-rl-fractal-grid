@@ -14,7 +14,7 @@ def flatten_tertiary_state(ter_state: Dict[str, Any]) -> List[float]:
     flat = []
     for mg in ter_state.get('microgrids', []):
         flat.append(float(mg.get('bess_soc', 0.0)))
-        flat.append(float(mg.get('load', 0.0)))
+        flat.append(float(mg.get('total_load', 0.0)))
         flat.append(float(mg.get('grid_power', 0.0)))
         flat.append(float(mg.get('der_generation', 0.0)))
         flat.append(float(mg.get('measured_voltage', 0.0)))

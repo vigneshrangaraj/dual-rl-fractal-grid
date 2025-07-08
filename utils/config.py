@@ -14,6 +14,7 @@ class Config:
     # Global parameters
     seed = 42
     device = "cuda"  # or "cpu", depending on your setup
+    use_lstm = False
 
     # -------------------------------
     # Tertiary Environment Settings
@@ -32,7 +33,7 @@ class Config:
 
     # Load parameters (tertiary level, e.g., aggregated load)
     base_load = 50.0  # kW
-    load_variability = 0.1  # ±10% variation
+    load_disturbance_percent = 0.1  # ±10% variation
     load_cost_factor = 0.05  # Cost per kW of load
 
     # Solar parameters
@@ -49,7 +50,8 @@ class Config:
 
     der_max_capacity = 0.1  # Maximum capacity of DERs (e.g., solar/wind) in MW
 
-    beta_ext_grid = 0.1  # Weight for external grid cost
+    buy_ext_grid = 150  # Weight for external grid cost
+    sell_ext_grid = 80  # Weight for external grid revenue
 
     # BESS parameters
     bess_capacity = 10000.0  # kWh
