@@ -36,6 +36,11 @@ class Config:
     load_disturbance_percent = 0.1  # ±10% variation
     load_cost_factor = 0.05  # Cost per kW of load
 
+    # DER Configuration
+    num_der_solar = 2  # Number of solar DERs
+    num_der_wind = 2   # Number of wind DERs
+    num_der_total = num_der_solar + num_der_wind  # Total number of DERs (4 by default)
+    
     # Solar parameters
     num_solar = 1
     solar_base_output = 10  # MW
@@ -43,20 +48,36 @@ class Config:
 
     # Wind parameters
     num_wind = 1
-    wind_base_output = 15  # MW
+    wind_base_output = 30  # MW
     wind_variability = 0.2  # ±20% variability
 
     beta_convergence = 0.1
 
     der_max_capacity = 0.1  # Maximum capacity of DERs (e.g., solar/wind) in MW
 
+    # Temporal pricing parameters
     buy_ext_grid = 150  # Weight for external grid cost
     sell_ext_grid = 80  # Weight for external grid revenue
+    
+    # Time-varying price parameters (24-hour cycle)
+    base_buy_price = 5.0  # Base buying price per MWh
+    base_sell_price = 3.0  # Base selling price per MWh
+    price_volatility = 0.3  # Price variation factor (30%)
+    
+    # Price forecast parameters
+    price_forecast_horizon = 24  # Hours to forecast ahead
+    price_forecast_noise = 0.1  # Noise in price forecast (10%)
+    
+    # Time-of-use pricing parameters
+    peak_hours = [18, 19, 20, 21, 22]  # Evening peak hours
+    off_peak_hours = [1, 2, 3, 4, 5, 6]  # Early morning off-peak hours
+    peak_multiplier = 1.5  # Price multiplier during peak hours
+    off_peak_multiplier = 0.7  # Price multiplier during off-peak hours
 
     # BESS parameters
     bess_capacity = 10000.0  # kWh
-    bess_max_charge = 20.0  # kW
-    bess_max_discharge = 20.0  # kW
+    bess_max_charge = 20.0  # MW
+    bess_max_discharge = 20.0  # MW
     bess_charge_efficiency = 0.95
     bess_discharge_efficiency = 0.95
     bess_initial_soc = 0.5  # Initial state-of-charge (fraction)
@@ -74,8 +95,8 @@ class Config:
     secondary_max_steps = 5
     action_penalty = 0.001  # Penalty coefficient for large control actions
 
-    V_nom = 1 # Nominal voltage (pu)
-    
+    V_nom = 1  # Nominal voltage (pu)
+
     # Voltage control parameters
     V_min = 0.9  # Minimum allowed voltage
     V_max = 1.1  # Maximum allowed voltage
@@ -109,9 +130,118 @@ class Config:
     # -------------------------------
     sac_gamma = 0.99
     sac_tau = 0.005
-    sac_alpha = 0.2
+    sac_alpha = 0.5  # Legacy parameter (kept for compatibility)
     sac_lr = 3e-4
-    sac_batch_size = 64
+    sac_batch_size = 256
+
+    policy_lr = 3e-4
+    q_lr = 3e-4
+    memory_size = 100000
+    replay_size = 100000  # Size of the replay buffer
+
+    sac_action_scale = 0.3
+
+    def get_der_bus_mapping(self):
+        """
+        Generate DER bus mapping based on configurable DER counts.
+        Returns a dictionary with solar and wind bus mappings.
+        """
+        # Default bus mapping for der_4.py structure
+        solar_buses = [4, 5]  # Default solar buses
+        wind_buses = [6, 7]   # Default wind buses
+        
+        # Adjust based on configurable counts
+        solar_buses = solar_buses[:self.num_der_solar]
+        wind_buses = wind_buses[:self.num_der_wind]
+        
+        return {
+            'solar_buses': solar_buses,
+            'wind_buses': wind_buses,
+            'total_der_count': self.num_der_total
+        }
+
+    def get_temporal_prices(self, time_step):
+        """
+        Generate time-varying electricity prices with arbitrage potential.
+        """
+        import numpy as np
+
+        base_buy = self.base_buy_price
+        base_sell = self.base_sell_price
+
+        if time_step in self.peak_hours:
+            # High demand: Buy price high, sell price high
+            buy_price = base_buy * self.peak_multiplier
+            sell_price = base_sell * self.peak_multiplier
+        elif time_step in self.off_peak_hours:
+            # Low demand: Buy cheap, but sell for a fair price
+            buy_price = base_buy * self.off_peak_multiplier
+            sell_price = base_sell * self.off_peak_multiplier * 0.2
+        else:
+            # Normal hours
+            buy_price = base_buy
+            sell_price = base_sell * 0.1  # small premium
+
+        # Add volatility (same for reproducibility)
+        np.random.seed(time_step)
+        buy_noise = np.random.normal(0, self.price_volatility * buy_price * 0.1)
+        sell_noise = np.random.normal(0, self.price_volatility * sell_price * 0.1)
+
+        buy_price = max(10.0, buy_price + buy_noise)
+        sell_price = max(5.0, sell_price + sell_noise)
+
+        return {
+            'buy_price': buy_price,
+            'sell_price': sell_price
+        }
+
+    def get_price_forecast(self, current_time_step):
+        """
+        Generate price forecast for the next 24 hours using time-of-use pricing logic.
+
+        Args:
+            current_time_step: Current hour (0-23)
+
+        Returns:
+            dict: buy_price_forecast and sell_price_forecast arrays
+        """
+        import numpy as np
+
+        buy_forecast = []
+        sell_forecast = []
+
+        for t in range(self.price_forecast_horizon):
+            future_time = (current_time_step + t) % 24
+
+            # Use temporal pricing logic
+            base_buy = self.base_buy_price
+            base_sell = self.base_sell_price
+
+            if future_time in self.peak_hours:
+                buy_price = base_buy * self.peak_multiplier
+                sell_price = base_sell * self.peak_multiplier * 1.2
+            elif future_time in self.off_peak_hours:
+                buy_price = base_buy * self.off_peak_multiplier
+                sell_price = base_sell * self.off_peak_multiplier * 0.9
+            else:
+                buy_price = base_buy
+                sell_price = base_sell * 0.1
+
+            # Add noise to forecast
+            np.random.seed(current_time_step + t)
+            buy_noise = np.random.normal(0, self.price_forecast_noise * buy_price)
+            sell_noise = np.random.normal(0, self.price_forecast_noise * sell_price)
+
+            final_buy = max(10.0, buy_price + buy_noise)
+            final_sell = max(5.0, sell_price + sell_noise)
+
+            buy_forecast.append(final_buy)
+            sell_forecast.append(final_sell)
+
+        return {
+            'buy_price_forecast': buy_forecast,
+            'sell_price_forecast': sell_forecast
+        }
 
 # To use the configuration in your modules, you can do:
 # from utils.config import DualRLConfig

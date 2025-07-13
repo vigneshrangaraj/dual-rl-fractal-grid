@@ -5,8 +5,16 @@ import os
 
 def flatten_tertiary_action(ter_action: Dict[str, Any]) -> List[float]:
     flat = []
+    from utils.config import Config
+    config = Config()
+    num_der_total = getattr(config, "num_der_total", 4)
+    
     for mg in ter_action.get('microgrids', []):
-        flat.append(float(mg.get('dispatch_power', 0.0)))
+        # Add configurable DER actions
+        der_actions = mg.get('der_actions', [0.0] * num_der_total)
+        for der_action in der_actions:
+            flat.append(float(der_action))
+        # Add 1 BESS action
         flat.append(float(mg.get('battery_operation', 0.0)))
     return flat
 
@@ -19,6 +27,7 @@ def flatten_tertiary_state(ter_state: Dict[str, Any]) -> List[float]:
         flat.append(float(mg.get('der_generation', 0.0)))
         flat.append(float(mg.get('measured_voltage', 0.0)))
     flat.append(float(ter_state.get('timestep', 0.0)))
+    
     return flat
 
 class ActionStatePlotter:
@@ -35,7 +44,19 @@ class ActionStatePlotter:
         self.tertiary_states: List[List[float]] = [[] for _ in range(num_tertiary_states)]
         self.secondary_states: List[List[float]] = [[] for _ in range(num_secondary_agents * num_secondary_states)]
 
-        self.tertiary_action_labels = ["Dispatch Power", "Battery Operation"]
+        # Generate configurable action labels
+        from utils.config import Config
+        config = Config()
+        num_der_solar = getattr(config, "num_der_solar", 2)
+        num_der_wind = getattr(config, "num_der_wind", 2)
+        
+        action_labels = []
+        for i in range(num_der_solar):
+            action_labels.append(f"Solar {i+1}")
+        for i in range(num_der_wind):
+            action_labels.append(f"Wind {i+1}")
+        action_labels.append("Battery Operation")
+        self.tertiary_action_labels = action_labels
         self.tertiary_state_labels = ["BESS SOC", "Load", "Grid Power", "DER Generation", "Measured Voltage", "Timestep"]
         self.secondary_state_labels = ["Voltage", "Reactive Power", "i_d", "i_q", "Delta"]
 

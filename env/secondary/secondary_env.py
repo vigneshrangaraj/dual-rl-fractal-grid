@@ -134,7 +134,7 @@ class SecondaryEnv:
 
             v_i = new_voltage
             if 0.90 <= v_i <= 1.02:
-                reward += 50.0
+                reward += 10.0
             elif 0.95 <= v_i < 0.98 or 1.02 < v_i <= 1.05:
                 reward += 0.2 - abs(1.0 - v_i)
                 violations += 1
@@ -142,10 +142,8 @@ class SecondaryEnv:
                 reward += -2.0 * abs(1.0 - v_i)
                 violations += 1
             else:
-                reward += -100.0
+                reward += -10.0
                 violations += 1
-
-            reward -= self.consensus_penalty * (consensus_error ** 2)
 
             self.rewards.append(reward)
             self.voltage_violations.append(violations)
@@ -153,7 +151,7 @@ class SecondaryEnv:
         self.states = next_states
         self.time_step += 1
         done = self.time_step >= self.max_steps or all(
-            state["voltage"] > 0.98 and state["voltage"] < 1.02 for state in self.states
+            state["voltage"] > 0.90 and state["voltage"] < 1.02 for state in self.states
         )
 
         if done and self.time_step <= 2:

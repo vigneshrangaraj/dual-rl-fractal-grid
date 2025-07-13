@@ -35,6 +35,9 @@ class FractalGridEnv:
         self.index_map = {}
         self.tie_switch_index_map = {}
 
+        self.peak_hours = config.peak_hours
+        self.off_peak_hours = config.off_peak_hours
+
         self.net = None
 
         # Create microgrid instances
@@ -399,15 +402,25 @@ class FractalGridEnv:
     def apply_load_p_mv_by_timestep(self, time_step, mg_id, episode_num=0):
         """
         Apply time-varying and episode-growing load with configurable disturbance percent.
+        Modulates load based on time-of-day to encourage BESS charging and discharging behavior.
         """
         base_load = np.array(self.microgrids[mg_id].base_loads)
         buses = list(self.index_map[mg_id]['load'].values())
 
         oscillation = 1.0 + 0.1 * np.sin(time_step / 10.0)  # short-term
-        drift = 1.0 + self.load_disturbance_percent  # long-term pressure
-
+        drift = 1.0 + self.load_disturbance_percent  # long-term growth
         random_noise = np.random.normal(0, 0.02, size=len(base_load))
-        self.net.load.loc[buses, "p_mw"] = drift * oscillation * base_load * (1 + random_noise)
+
+        # Temporal multiplier based on pricing window
+        if time_step in self.peak_hours:
+            temporal_multiplier = 2.2  # increase demand during peak to trigger BESS discharge
+        elif time_step in self.off_peak_hours:
+            temporal_multiplier = 0.8  # reduce demand to allow BESS charging
+        else:
+            temporal_multiplier = 1.0  # neutral during mid-day
+
+        load_profile = drift * oscillation * base_load * (1 + random_noise) * temporal_multiplier
+        self.net.load.loc[buses, "p_mw"] = load_profile
 
 
     def set_voltage_setpoint_for_der(self, voltage_setpoint, inverter_idx, mg_id):
@@ -423,9 +436,9 @@ class FractalGridEnv:
         # Apply dispatch commands to each microgrid.
         microgrid_actions = tertiary_action.get("microgrids", None)
         for i, mg in enumerate(self.microgrids):
-            dispatch = microgrid_actions[i].get("dispatch_power", None)
+            der_actions = microgrid_actions[i].get("der_actions", [0.0, 0.0, 0.0, 0.0])
             self.apply_load_p_mv_by_timestep(time_step, i)
-            self.apply_dispatch(dispatch, time_step, i)
+            self.apply_dispatch(der_actions, time_step, i)
             battery_operation = microgrid_actions[i].get("battery_operation", None)
             self.apply_battery_operation(battery_operation, i)
 
@@ -455,6 +468,53 @@ class FractalGridEnv:
 
         return next_state, reward, self.done, info
 
+    def simulate_bess_action(self, time_step):
+        """
+        Gradually choose battery action based on time of day and peak/off-peak hours.
+        Creates smooth transitions between charging and discharging states.
+        :param time_step: Current hour (0-23)
+        :return: Battery action in range [-1, 1]
+        """
+        # Get peak and off-peak hours from config
+        peak_hours = getattr(self.config, "peak_hours", [18, 19, 20, 21, 22])
+        off_peak_hours = getattr(self.config, "off_peak_hours", [1, 2, 3, 4, 5, 6])
+        
+        # Initialize action
+        bess_action = 0.0
+        
+        # Determine the optimal action based on time of day
+        if time_step in peak_hours:
+            # Peak hours: gradually increase discharging (negative action)
+            # Find position within peak hours for gradual increase
+            peak_duration = len(peak_hours)
+            
+            # Calculate position within peak hours (0 to peak_duration-1)
+            peak_position = peak_hours.index(time_step)
+            progress = (peak_position + 1) / peak_duration  # +1 to avoid 0 progress
+            
+            # Gradually increase discharging from -0.2 to -1.0
+            bess_action = 0.2 + (progress * 0.8)
+                
+        elif time_step in off_peak_hours:
+             return 0.0
+        else:
+            # Mid-day hours: gradual transition based on proximity to peak/off-peak
+            # Find distance to nearest peak and off-peak periods
+            distance_to_peak = min(abs(time_step - p) for p in peak_hours)
+            distance_to_off_peak = min(abs(time_step - op) for op in off_peak_hours)
+            
+            if distance_to_peak < distance_to_off_peak:
+                # Closer to peak hours, start mild discharging
+                bess_action = -0.2
+            else:
+                # Closer to off-peak hours, start mild charging
+                bess_action = -0.2
+        
+        # Ensure action is within bounds
+        bess_action = max(-1.0, min(1.0, bess_action))
+        
+        return bess_action
+
     def get_available_der_output(self, time_step):
         """
         Simulates available solar and wind generation based on hour of the day (0-23).
@@ -477,30 +537,41 @@ class FractalGridEnv:
 
         return solar_availability, wind_availability
 
-    def apply_dispatch(self, dispatch_command, time_step, mg_id):
+    def apply_dispatch(self, der_actions, time_step, mg_id):
         """
-        Apply dispatch command to DERs.
-        Now calls get_available_der_output() to get realistic availability based on time of day.
+        Apply individual dispatch commands to each DER.
+        der_actions: list of configurable floats [solar1, solar2, ..., wind1, wind2, ...]
         """
-
         # Get available generation factors
         solar_availability, wind_availability = self.get_available_der_output(time_step)
 
         mg = self.microgrids[mg_id]
-        # Update Solar
-
+        
+        # Get base outputs
         solar_base_output = getattr(self.config, "solar_base_output", 0.005)
-
-        cur_solar_buses = self.index_map[mg_id]['solar_gen'].values()
-
-        self.net.gen.loc[cur_solar_buses, 'p_mw'] = abs(dispatch_command * solar_base_output * solar_availability)
-
-        # Update Wind
-
-        cur_wind_buses = self.index_map[mg_id]['wind_gen'].values()
-
         wind_base_output = getattr(self.config, "wind_base_output", 0.007)
-        self.net.gen.loc[cur_wind_buses, 'p_mw'] = abs(dispatch_command * wind_base_output * wind_availability)
+
+        # Get DER bus indices
+        cur_solar_buses = list(self.index_map[mg_id]['solar_gen'].values())
+        cur_wind_buses = list(self.index_map[mg_id]['wind_gen'].values())
+
+        # Get configurable DER counts
+        num_der_solar = getattr(self.config, "num_der_solar", 2)
+        num_der_wind = getattr(self.config, "num_der_wind", 2)
+
+        # Apply individual DER actions
+        # Solar DERs (first num_der_solar indices in der_actions)
+        for i, solar_bus in enumerate(cur_solar_buses):
+            if i < num_der_solar and i < len(der_actions):
+                solar_action = der_actions[i]
+                self.net.gen.loc[solar_bus, 'p_mw'] = abs(solar_action * solar_base_output * solar_availability)
+
+        # Wind DERs (indices num_der_solar onwards in der_actions) 
+        for i, wind_bus in enumerate(cur_wind_buses):
+            wind_action_idx = num_der_solar + i
+            if wind_action_idx < len(der_actions):
+                wind_action = der_actions[wind_action_idx]
+                self.net.gen.loc[wind_bus, 'p_mw'] = abs(wind_action * wind_base_output * wind_availability)
 
 
     def apply_battery_operation(self, battery_operation, mg_id):
@@ -515,19 +586,38 @@ class FractalGridEnv:
         energy_change = -battery_operation * max_e_mwh
 
         # Clamp the new energy within limits
-        new_energy = np.clip(stored_energy_mwh + energy_change, 0.0, max_e_mwh)
+        new_energy = stored_energy_mwh + energy_change
 
         # Update SOC
         new_soc = new_energy / max_e_mwh
-        if not (0.0 < new_soc < 1.0):
+        if not (0.0 <= new_soc <= 1.0):
             print("Battery SOC out of bounds:", new_soc)
-            self.net.storage.loc[storage_idx, "p_mw"] = 0.0
-            return
-
-        mg.last_soc = new_soc
+            if new_soc < 0.0 and mg.last_soc > 0.0:
+                print("Battery discarge reached limits, discharing remaining energy.")
+                new_soc = 0.0  # Clamp to 0 if discharging below 0
+                self.net.storage.loc[storage_idx, "p_mw"] = -stored_energy_mwh
+                self.net.storage.loc[storage_idx, "soc_percent"] = 0.0
+                mg.last_soc = 0.0
+            elif new_soc > 1.0 and mg.last_soc < 1.0:
+                print("Battery charge reached limits, charging remaining energy.")
+                new_soc = 1.0  # Clamp to 1 if charging above 1
+                mg.last_soc = 1.0
+                self.net.storage.loc[storage_idx, "p_mw"] = max_e_mwh - stored_energy_mwh
+                self.net.storage.loc[storage_idx, "soc_percent"] = 100.0
+            else:
+                print("Battery no more power to discharge or charge.")
+                self.net.storage.loc[storage_idx, "p_mw"] = 0.0
+        else:
+            self.net.storage.loc[storage_idx, "p_mw"] = -battery_operation * self.net.storage.loc[
+                storage_idx, "max_e_mwh"]
+            self.net.storage.loc[storage_idx, "soc_percent"] = new_soc * 100
+            mg.last_soc = new_soc
 
         # Basic voltage support: absorb or inject reactive power based on voltage
-        bus_vm = self.net.res_bus.vm_pu[bus_storage_idx]
+        try:
+            bus_vm = self.net.res_bus.vm_pu[bus_storage_idx]
+        except KeyError as e:
+            bus_vm = self.net.bus.vn_kv[bus_storage_idx] / self.V_ref
         if bus_vm > 1.05:
             q_mvar = -0.5  # absorb reactive power
         elif bus_vm < 0.95:
@@ -536,11 +626,7 @@ class FractalGridEnv:
             q_mvar = 0.0
         self.net.storage.loc[storage_idx, "q_mvar"] = q_mvar
 
-
-        # Update network
-        self.net.storage.loc[storage_idx, "p_mw"] = battery_operation * self.net.storage.loc[storage_idx, "max_e_mwh"]
-        self.net.storage.loc[storage_idx, "initial_e_mwh"] = new_energy
-        self.net.storage.loc[storage_idx, "soc_percent"] = new_soc * 100
+        mg.this_soc = new_soc
 
         print("Battery operation applied, dispatching energy:" , self.net.storage.loc[storage_idx, "p_mw"], "MW")
 
@@ -553,7 +639,7 @@ class FractalGridEnv:
             if mg.mg_id == mg_id:
                 load_indexes = list(self.index_map[mg_id]['load'].values())
                 der_indexes = list(self.index_map[mg_id]['gen'].values())
-                bess_soc = mg.last_soc
+                bess_soc = mg.this_soc
                 total_load = self.net.load.loc[load_indexes, "p_mw"].sum()
                 der_generation = self.net.gen.loc[der_indexes, "p_mw"].sum()
                 break
@@ -589,6 +675,18 @@ class FractalGridEnv:
 
     def _get_state(self):
         mg_states = [self.get_state_by_mg_id(mg.mg_id) for mg in self.microgrids]
+
+        # Get price forecast for current timestep
+        price_forecast = self.config.get_price_forecast(self.current_step)
+        current_prices = self.config.get_temporal_prices(self.current_step)
+        
+        # Combine current prices with forecast
+        price_info = {
+            "current_buy_price": current_prices["buy_price"],
+            "current_sell_price": current_prices["sell_price"],
+            "buy_price_forecast": price_forecast["buy_price_forecast"],
+            "sell_price_forecast": price_forecast["sell_price_forecast"]
+        }
 
         state = {
             "microgrids": mg_states,

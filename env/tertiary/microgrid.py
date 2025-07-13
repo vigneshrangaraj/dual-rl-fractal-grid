@@ -17,6 +17,8 @@ class MicroGrid:
         self.switches = {}
         self.pf_net = None
 
+        self.this_soc = 0.5
+
         self.storage_idx = None
 
         self.last_soc = 0.5

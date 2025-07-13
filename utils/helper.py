@@ -9,7 +9,7 @@ class Helper:
     @staticmethod
     def flatten_tertiary_state(state_dict):
         """
-        Expected s
+        Expected state_dict:
           {
              "microgrids": [
                 {
@@ -21,12 +21,11 @@ class Helper:
                 },
                 ...  (for each microgrid)
              ],
-             "timestep": scalar            # Current simulation step
+             "timestep": scalar           # Current simulation step
           }
 
         Returns:
-          A torch.FloatTensor representing the flattened state vector, of shape
-          ([num_microgrids * 5] + 1,).
+          A torch.FloatTensor representing the flattened state vector.
         """
         import numpy as np
         import torch
@@ -36,7 +35,7 @@ class Helper:
         microgrids = state_dict.get("microgrids", [])
         for mg in microgrids:
             bess_soc = mg.get("bess_soc", 0.0)
-            load = mg.get("load", 0.0)
+            load = mg.get("total_load", 0.0)
             grid_power = mg.get("grid_power", 0.0)
             der_generation = mg.get("der_generation", 0.0)
             measured_voltage = mg.get("measured_voltage", 0.0)
@@ -77,8 +76,8 @@ class Helper:
           {
             "microgrids": [
                 {
-                  "dispatch_power": float,
-                  "battery_operation": float
+                  "der_actions": [float, ...],  # Configurable number of DER actions
+                  "battery_operation": float,
                 },
                 ...  (for each microgrid)
             ],
@@ -93,10 +92,12 @@ class Helper:
         """
         action_vector = []
         microgrids = action_dict.get("microgrids", [])
+        num_der_total = getattr(config, "num_der_total", 4)
         for mg in microgrids:
-            dispatch_power = mg.get("dispatch_power", 0.0)
+            der_actions = mg.get("der_actions", [0.0] * num_der_total)
             battery_operation = mg.get("battery_operation", 0.0)
-            action_vector.extend([dispatch_power, battery_operation])
+            action_vector.extend(der_actions)  # Add DER actions
+            action_vector.append(battery_operation)  # Add 1 BESS action
 
         tie_lines = action_dict.get("tie_lines", [])
         for tie_line in tie_lines:
@@ -111,25 +112,29 @@ class Helper:
     def unpack_tertiary_action(action_vector, switch_set):
         """
           A dict with keys:
-            - "mictogrid": "dict" with keys:
-                - "dispatch_power": float
+            - "microgrids": list of dicts with keys:
+                - "der_actions": list of configurable floats (one for each DER)
                 - "battery_operation": float
-                - "tie_lines": tuple (from, to, value)
+            - "tie_lines": list of tuples (from, to, value)
         """
         # If action_vector is a torch tensor, move to CPU and convert to numpy.
         if torch.is_tensor(action_vector):
             action_vector = action_vector.detach().cpu().numpy()
 
         num_microgrids = getattr(config, "num_microgrids", 1)
-        # for each microgrid, we have two actions: dispatch_power and battery_operation
+        num_der_total = getattr(config, "num_der_total", 4)
+        # for each microgrid, we have (num_der_total + 1) actions: DER actions + 1 battery operation
         # and the rest are tie lines
         microgrid_actions = []
 
         for i in range(num_microgrids):
-            dispatch_power = action_vector[i * 2]
-            battery_operation = action_vector[i * 2 + 1]
+            # Extract DER actions
+            der_actions = []
+            for j in range(num_der_total):
+                der_actions.append(action_vector[i * (num_der_total + 1) + j])
+            battery_operation = action_vector[i * (num_der_total + 1) + num_der_total]
             microgrid_actions.append({
-                "dispatch_power": dispatch_power,
+                "der_actions": der_actions,
                 "battery_operation": battery_operation
             })
 
@@ -145,7 +150,7 @@ class Helper:
             from_mg = int(indices[1])
             to_mg = int(indices[3])
             # The value is either 0 or 1
-            value = action_vector[(num_microgrids * 2) + k]
+            value = action_vector[(num_microgrids * (num_der_total + 1)) + k]
             tie_lines.append((from_mg, to_mg, value))
             k += 1
 
