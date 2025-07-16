@@ -132,7 +132,7 @@ class PandaPowerWrapper:
             if abs(p_mw) > 1e-3:  # Tolerance of 1W
                 print(f"[Warning] Ext grid is supplying {p_mw:.4f} MW — system is not balanced.")
             return p_mw
-        return 0.0
+        return 100 # large number to indicate no convergence
 
     @staticmethod
     def run_power_flow(net, tie_lines):

@@ -662,7 +662,7 @@ class FractalGridEnv:
             # print err
             print(f"KeyError: {e}")
             logging.error(f"External grid ID {mg_id} not found in index map.")
-            grid_power = 0
+            grid_power = 100 # large value to let SAC know no convergence 
 
         state = {
             "bess_soc": bess_soc,

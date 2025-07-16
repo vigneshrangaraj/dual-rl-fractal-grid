@@ -60,7 +60,7 @@ class Config:
     sell_ext_grid = 80  # Weight for external grid revenue
     
     # Time-varying price parameters (24-hour cycle)
-    base_buy_price = 5.0  # Base buying price per MWh
+    base_buy_price = 15.0  # Base buying price per MWh
     base_sell_price = 3.0  # Base selling price per MWh
     price_volatility = 0.3  # Price variation factor (30%)
     
@@ -188,7 +188,6 @@ class Config:
         sell_noise = np.random.normal(0, self.price_volatility * sell_price * 0.1)
 
         buy_price = max(10.0, buy_price + buy_noise)
-        sell_price = max(5.0, sell_price + sell_noise)
 
         return {
             'buy_price': buy_price,
