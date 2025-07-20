@@ -121,3 +121,13 @@ class RewardPlotter:
         np.save("plots/secondary_rewards.npy", np.array(self.secondary_rewards))
         np.save("plots/episodes.npy", np.array(self.episodes))
         logging.info("Final plot and reward data saved to plots/ directory")
+
+    def save_data(self):
+        """
+        Save all reward plot data as .npy files in the plots directory for later analysis.
+        """
+        os.makedirs("plots", exist_ok=True)
+        np.save("plots/episodes.npy", np.array(self.episodes))
+        np.save("plots/tertiary_rewards.npy", np.array(self.tertiary_rewards))
+        np.save("plots/secondary_rewards.npy", np.array(self.secondary_rewards))
+        np.save("plots/secondary_voltage_violations.npy", np.array(self.secondary_voltage_violations))

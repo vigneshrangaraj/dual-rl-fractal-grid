@@ -212,4 +212,27 @@ class EpisodeDataLogger:
             'avg_voltage': df[['DER1_Voltage', 'DER2_Voltage', 'DER3_Voltage', 'DER4_Voltage']].mean().mean()
         }
         
-        return summary 
+        return summary
+
+    def log_episode(self, episode, total_reward, steps, avg_bess_soc, final_bess_soc):
+        """
+        Log episode-level data for centralized agent.
+        
+        Args:
+            episode: Episode number
+            total_reward: Total reward for the episode
+            steps: Number of steps in the episode
+            avg_bess_soc: Average BESS SOC during episode
+            final_bess_soc: Final BESS SOC at end of episode
+        """
+        # Create CSV file with headers if it doesn't exist
+        if not os.path.exists(self.csv_filename):
+            headers = ['Episode', 'Total_Reward', 'Steps', 'Avg_BESS_SOC', 'Final_BESS_SOC']
+            with open(self.csv_filename, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(headers)
+        
+        # Append episode data
+        with open(self.csv_filename, 'a', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([episode, total_reward, steps, avg_bess_soc, final_bess_soc]) 

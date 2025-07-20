@@ -71,7 +71,6 @@ class SecondaryEnv:
         new_actions = []
         new_inverter_states = []
         consensus_errors = []
-        is_converged = False
 
         for i, inverter in enumerate(self.inverters):
             inverter = self.inverters[i]
@@ -96,7 +95,7 @@ class SecondaryEnv:
             new_inverter_state = inverter.update(V_ref=action, measured_voltage=measured_voltage)
             new_inverter_states.append(new_inverter_state)
 
-        net, inv_voltages = pw.run_power_flow(tertiary_env.net, tie_lines)
+        net, inv_voltages, is_converged = pw.run_power_flow(tertiary_env.net, tie_lines)
 
         index_map = tertiary_env.index_map
         for i, mg in enumerate(tertiary_env.microgrids):

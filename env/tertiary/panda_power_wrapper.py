@@ -186,7 +186,7 @@ class PandaPowerWrapper:
             print("==== print total mv at load and gen =====")
             print(net.load.p_mw)
             print(net.gen.p_mw)
-            return net, inv_voltages
+            return net, inv_voltages, False
 
         print("=== POWER FLOW CONVERGED SUCCESSFULLY ===")
         print("=== Voltage Results ===")
@@ -202,7 +202,7 @@ class PandaPowerWrapper:
         print(net.res_storage.p_mw)
         print("=== res_ext_grid ===")
         print(net.res_ext_grid)
-        return net, inv_voltages
+        return net, inv_voltages, True
 
 
 # For testing the wrapper standalone.

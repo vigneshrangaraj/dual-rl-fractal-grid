@@ -15,6 +15,24 @@ class Config:
     seed = 42
     device = "cuda"  # or "cpu", depending on your setup
     use_lstm = False
+    use_centralized_sac = False  # Flag to enable centralized SAC for ablation study
+    use_centralized_ddpg = False  # Flag to enable centralized DDPG for ablation study
+    use_centralized_ppo = True  # Flag to enable centralized PPO for ablation study
+
+    # -------------------------------
+    # PPO Agent (Centralized) Settings
+    # -------------------------------
+    ppo_lr = 3e-4
+    ppo_clip_ratio = 0.2
+    ppo_value_loss_coef = 0.5
+    ppo_entropy_coef = 0.01
+    ppo_max_grad_norm = 0.5
+    ppo_target_kl = 0.01
+    ppo_update_epochs = 4
+    ppo_batch_size = 64
+    ppo_gamma = 0.99
+    ppo_gae_lambda = 0.95
+    ppo_buffer_size = 10000
 
     # -------------------------------
     # Tertiary Environment Settings
