@@ -3,8 +3,7 @@ import pandapower as pp
 import numpy as np
 from pandapower.plotting.plotly import simple_plotly
 from pandapower.networks.create_examples import example_simple
-import fns.der_4 as der4
-from fns.der_4 import der_4
+import fns.der_24_ieee as der4
 
 
 class MicroGrid:
@@ -16,12 +15,10 @@ class MicroGrid:
         self.neighbors = []
         self.switches = {}
         self.pf_net = None
-
-        self.this_soc = 0.5
-
+        num_bess_total = getattr(config, "num_bess_total", 1)
+        self.this_soc = [0.5] * num_bess_total
+        self.last_soc = [0.5] * num_bess_total
         self.storage_idx = None
-
-        self.last_soc = 0.5
 
         # Create the IEEE 34 bus network (a simplified version)
         self.base_loads = []
@@ -40,14 +37,15 @@ class MicroGrid:
         self.switches[switch_name] = 0  # Initially, all switches are open (0)
 
     def _create_ieee34_network(self):
-        der4_net = der4.der_4()
+        der4_net = der4.der_24_ieee()
+        simple_plotly(der4_net.get_network())
         self.wind_buses = der4_net.wind_buses
         self.combine_bus_inv_idx = der4_net.combine_bus_inv_idx
         self.num_buses = der4_net.num_buses
         self.num_secondary_agents = der4_net.num_secondary_agents
         self.solar_buses = der4_net.solar_buses
-        self.storage_idx = der4_net.get_storage_idx()
-        self.storage_bus_id = der4_net.bess_bus_id
+        self.storage_idx = der4_net.get_storage_idxs()
+        self.storage_bus_id = der4_net.bess_bus_ids
 
         # populate base loads
         for i in range(self.num_buses):
@@ -56,6 +54,9 @@ class MicroGrid:
         return der4_net.get_network()
 
     def reset(self):
+        num_bess_total = getattr(self.config, "num_bess_total", 1)
+        self.this_soc = [0.5] * num_bess_total
+        self.last_soc = [0.5] * num_bess_total
         self.net.res_bus.vm_pu = np.full(self.num_buses, self.V_ref)
 
     def get_voltage_at_bus(self, bus_idx):

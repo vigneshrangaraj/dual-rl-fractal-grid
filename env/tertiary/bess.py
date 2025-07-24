@@ -106,3 +106,8 @@ if __name__ == "__main__":
     applied_power = bess.apply_action(action_power)
     print("Applied Action (kW):", applied_power)
     print("Updated State:", bess.get_state())
+
+    # No code change needed for multi-BESS support, but add docstring clarification.
+    """
+    Note: For multiple BESS units, instantiate this class multiple times and manage them as a list.
+    """

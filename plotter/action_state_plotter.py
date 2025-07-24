@@ -8,26 +8,27 @@ def flatten_tertiary_action(ter_action: Dict[str, Any]) -> List[float]:
     from utils.config import Config
     config = Config()
     num_der_total = getattr(config, "num_der_total", 4)
-    
+    num_bess_total = getattr(config, "num_bess_total", 1)
     for mg in ter_action.get('microgrids', []):
-        # Add configurable DER actions
         der_actions = mg.get('der_actions', [0.0] * num_der_total)
-        for der_action in der_actions:
-            flat.append(float(der_action))
-        # Add 1 BESS action
-        flat.append(float(mg.get('battery_operation', 0.0)))
+        flat.extend([float(a) for a in der_actions])
+        bess_actions = mg.get('battery_operation', [0.0] * num_bess_total)
+        flat.extend([float(a) for a in bess_actions])
     return flat
 
 def flatten_tertiary_state(ter_state: Dict[str, Any]) -> List[float]:
     flat = []
+    from utils.config import Config
+    config = Config()
+    num_bess_total = getattr(config, "num_bess_total", 1)
     for mg in ter_state.get('microgrids', []):
-        flat.append(float(mg.get('bess_soc', 0.0)))
+        bess_socs = mg.get('bess_soc', [0.0] * num_bess_total)
+        flat.extend([float(s) for s in bess_socs])
         flat.append(float(mg.get('total_load', 0.0)))
         flat.append(float(mg.get('grid_power', 0.0)))
         flat.append(float(mg.get('der_generation', 0.0)))
         flat.append(float(mg.get('measured_voltage', 0.0)))
     flat.append(float(ter_state.get('timestep', 0.0)))
-    
     return flat
 
 class ActionStatePlotter:
@@ -49,19 +50,21 @@ class ActionStatePlotter:
         config = Config()
         num_der_solar = getattr(config, "num_der_solar", 2)
         num_der_wind = getattr(config, "num_der_wind", 2)
+        num_bess_total = getattr(config, "num_bess_total", 1)
         
         action_labels = []
         for i in range(num_der_solar):
             action_labels.append(f"Solar {i+1}")
         for i in range(num_der_wind):
             action_labels.append(f"Wind {i+1}")
-        action_labels.append("Battery Operation")
+        for i in range(num_bess_total):
+            action_labels.append(f"BESS {i+1}")
         self.tertiary_action_labels = action_labels
-        self.tertiary_state_labels = ["BESS SOC", "Load", "Grid Power", "DER Generation", "Measured Voltage", "Timestep"]
+        self.tertiary_state_labels = [f"BESS SOC {i+1}" for i in range(num_bess_total)] + ["Load", "Grid Power", "DER Generation", "Measured Voltage", "Timestep"]
         self.secondary_state_labels = ["Voltage", "Reactive Power", "i_d", "i_q", "Delta"]
 
         os.makedirs("plots", exist_ok=True)
-        self.fig, self.axes = plt.subplots(5, 1, figsize=(14, 24))
+        self.fig, self.axes = plt.subplots(5, 1, figsize=(16, 28), constrained_layout=True)
         plt.ion()
 
         titles = [
@@ -77,7 +80,7 @@ class ActionStatePlotter:
             ax.set_ylabel("Value")
             ax.grid(True)
 
-        plt.tight_layout()
+        # plt.tight_layout()  # No longer needed with constrained_layout
         self.fig.subplots_adjust(right=0.75)
 
     def update(

@@ -413,11 +413,11 @@ class FractalGridEnv:
 
         # Temporal multiplier based on pricing window
         if time_step in self.peak_hours:
-            temporal_multiplier = 2.2  # increase demand during peak to trigger BESS discharge
+            temporal_multiplier = 1  # increase demand during peak to trigger BESS discharge
         elif time_step in self.off_peak_hours:
-            temporal_multiplier = 0.8  # reduce demand to allow BESS charging
+            temporal_multiplier = 0.7  # reduce demand to allow BESS charging
         else:
-            temporal_multiplier = 1.0  # neutral during mid-day
+            temporal_multiplier = 0.9  # neutral during mid-day
 
         load_profile = drift * oscillation * base_load * (1 + random_noise) * temporal_multiplier
         self.net.load.loc[buses, "p_mw"] = load_profile
@@ -574,61 +574,55 @@ class FractalGridEnv:
                 self.net.gen.loc[wind_bus, 'p_mw'] = abs(wind_action * wind_base_output * wind_availability)
 
 
-    def apply_battery_operation(self, battery_operation, mg_id):
+    def apply_battery_operation(self, battery_operations, mg_id):
         mg = self.microgrids[mg_id]
-        storage_idx = self.index_map[mg_id]['storage'][self.microgrids[mg_id].storage_idx]
-        bus_storage_idx = self.microgrids[mg_id].storage_bus_id - 1
-        max_e_mwh = self.net.storage.loc[storage_idx, "max_e_mwh"]
-
-        # Convert SOC to stored energy
-        stored_energy_mwh = mg.last_soc * max_e_mwh
-
-        energy_change = -battery_operation * max_e_mwh
-
-        # Clamp the new energy within limits
-        new_energy = stored_energy_mwh + energy_change
-
-        # Update SOC
-        new_soc = new_energy / max_e_mwh
-        if not (0.0 <= new_soc <= 1.0):
-            print("Battery SOC out of bounds:", new_soc)
-            if new_soc < 0.0 and mg.last_soc > 0.0:
-                print("Battery discarge reached limits, discharing remaining energy.")
-                new_soc = 0.0  # Clamp to 0 if discharging below 0
-                self.net.storage.loc[storage_idx, "p_mw"] = -stored_energy_mwh
-                self.net.storage.loc[storage_idx, "soc_percent"] = 0.0
-                mg.last_soc = 0.0
-            elif new_soc > 1.0 and mg.last_soc < 1.0:
-                print("Battery charge reached limits, charging remaining energy.")
-                new_soc = 1.0  # Clamp to 1 if charging above 1
-                mg.last_soc = 1.0
-                self.net.storage.loc[storage_idx, "p_mw"] = max_e_mwh - stored_energy_mwh
-                self.net.storage.loc[storage_idx, "soc_percent"] = 100.0
+        if not isinstance(battery_operations, (list, tuple, np.ndarray)):
+            battery_operations = [battery_operations]
+        storage_idxs = self.index_map[mg_id]['storage']
+        max_e_mwhs = [self.net.storage.loc[idx, "max_e_mwh"] for idx in storage_idxs]
+        stored_energies = [mg.last_soc[i] * max_e_mwhs[i] for i in range(len(storage_idxs))]
+        storage_bus_ids = mg.storage_bus_id if isinstance(mg.storage_bus_id, (list, tuple, np.ndarray)) else [mg.storage_bus_id]
+        for i, (storage_idx, battery_operation) in enumerate(zip(storage_idxs, battery_operations)):
+            max_e_mwh = max_e_mwhs[i]
+            stored_energy_mwh = stored_energies[i]
+            energy_change = -battery_operation * max_e_mwh
+            new_energy = stored_energy_mwh + energy_change
+            new_soc = new_energy / max_e_mwh
+            if not (0.0 <= new_soc <= 1.0):
+                print(f"Battery {i} SOC out of bounds:", new_soc)
+                if new_soc < 0.0 and mg.last_soc[i] > 0.0:
+                    print("Battery discharge reached limits, discharging remaining energy.")
+                    new_soc = 0.0
+                    self.net.storage.loc[storage_idx, "p_mw"] = -stored_energy_mwh
+                    self.net.storage.loc[storage_idx, "soc_percent"] = 0.0
+                    mg.last_soc[i] = 0.0
+                elif new_soc > 1.0 and mg.last_soc[i] < 1.0:
+                    print("Battery charge reached limits, charging remaining energy.")
+                    new_soc = 1.0
+                    mg.last_soc[i] = 1.0
+                    self.net.storage.loc[storage_idx, "p_mw"] = max_e_mwh - stored_energy_mwh
+                    self.net.storage.loc[storage_idx, "soc_percent"] = 100.0
+                else:
+                    print("Battery no more power to discharge or charge.")
+                    self.net.storage.loc[storage_idx, "p_mw"] = 0.0
             else:
-                print("Battery no more power to discharge or charge.")
-                self.net.storage.loc[storage_idx, "p_mw"] = 0.0
-        else:
-            self.net.storage.loc[storage_idx, "p_mw"] = -battery_operation * self.net.storage.loc[
-                storage_idx, "max_e_mwh"]
-            self.net.storage.loc[storage_idx, "soc_percent"] = new_soc * 100
-            mg.last_soc = new_soc
-
-        # Basic voltage support: absorb or inject reactive power based on voltage
-        try:
-            bus_vm = self.net.res_bus.vm_pu[bus_storage_idx]
-        except KeyError as e:
-            bus_vm = self.net.bus.vn_kv[bus_storage_idx] / self.V_ref
-        if bus_vm > 1.05:
-            q_mvar = -0.5  # absorb reactive power
-        elif bus_vm < 0.95:
-            q_mvar = 0.5  # inject reactive power
-        else:
-            q_mvar = 0.0
-        self.net.storage.loc[storage_idx, "q_mvar"] = q_mvar
-
-        mg.this_soc = new_soc
-
-        print("Battery operation applied, dispatching energy:" , self.net.storage.loc[storage_idx, "p_mw"], "MW")
+                self.net.storage.loc[storage_idx, "p_mw"] = -battery_operation * max_e_mwh
+                self.net.storage.loc[storage_idx, "soc_percent"] = new_soc * 100
+                mg.last_soc[i] = new_soc
+            # Basic voltage support: absorb or inject reactive power based on voltage
+            try:
+                bus_storage_idx = storage_bus_ids[i] - 1  # Adjust for 0-based index
+                bus_vm = self.net.res_bus.vm_pu[bus_storage_idx]
+            except KeyError as e:
+                bus_vm = self.net.bus.vn_kv[bus_storage_idx] / self.V_ref
+            if bus_vm > 1.05:
+                q_mvar = -0.5
+            elif bus_vm < 0.95:
+                q_mvar = 0.5
+            else:
+                q_mvar = 0.0
+            self.net.storage.loc[storage_idx, "q_mvar"] = q_mvar
+            print(f"Battery {i} operation applied, dispatching energy:", self.net.storage.loc[storage_idx, "p_mw"], "MW")
 
     def get_state_by_mg_id(self, mg_id):
 

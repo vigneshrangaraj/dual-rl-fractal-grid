@@ -4,6 +4,8 @@ from scipy.constants import value
 from env.secondary.comm import CommunicationModule
 from env.secondary.inverter import Inverter
 from env.tertiary.panda_power_wrapper import PandaPowerWrapper as pw
+from fns.der_20 import der_20
+from fns.der_24_ieee import der_24_ieee
 from fns.der_4 import der_4
 
 
@@ -25,7 +27,7 @@ class SecondaryEnv:
 
         self.config = config
 
-        self.fn = der_4()
+        self.fn = der_24_ieee()
 
         self.inv_buses = self.fn.combine_bus_inv_idx
         self.num_agents = self.fn.num_secondary_agents

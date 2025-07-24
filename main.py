@@ -34,48 +34,42 @@ def main(tertiary_action=None):
     if os.path.exists("episode_data.csv"):
         os.remove("episode_data.csv")
         print("Cleaned up previous episode_data.csv file")
-    
+
     # Load configuration parameters
     global sec_rewards, sec_done
     config = Config()
-
-    # Initialize the dual-level environment
-    dual_env = DualRLEnv(config)
-
+    num_microgrids = getattr(config, "num_microgrids", 1)
+    num_der_total = getattr(config, "num_der_total", 4)
+    num_bess_total = getattr(config, "num_bess_total", 1)
     # Reset environment to get an initial tertiary state and flatten it
+    dual_env = DualRLEnv(config)
     state = dual_env.reset()
     tertiary_state = state.get("tertiary", {})
     time_step = tertiary_state.get("timestep", 0)
     flat_state = helper.flatten_tertiary_state(tertiary_state)
     state_dim = flat_state.shape[0]
-
-    num_microgrids = getattr(config, "num_microgrids", 1)
-    num_der_total = getattr(config, "num_der_total", 4)
-    # New action space: configurable DER actions + 1 BESS action + switching actions per microgrid
-    action_dim = ((num_der_total + 1) * num_microgrids) + dual_env.tertiary_env.switches
-
+    # New action space: configurable DER actions + configurable BESS actions + switching actions per microgrid
+    action_dim = ((num_der_total + num_bess_total) * num_microgrids) + dual_env.tertiary_env.switches
     # Instantiate the tertiary SAC agent
     tertiary_agent = SACAgent(state_dim, action_dim, config)
-
     # For secondary agents
     num_secondary = dual_env.tertiary_env.microgrids[0].num_secondary_agents
+    adjacency_matrix = dual_env.secondary_env.adjacency_matrix
     secondary_agents = []
-
     for i in range(num_microgrids):
         for j in range(num_secondary):
-            secondary_agent = IA3CAgent(config, agent_id=j, microgrid_id=i, inverter_id=j)
+            agent_id = j
+            secondary_agent = IA3CAgent(config, agent_id=agent_id, microgrid_id=i, inverter_id=j, adjacency_matrix=adjacency_matrix)
             secondary_agents.append(secondary_agent)
-
     # Initialize the plotter
     plotter = RewardPlotter(len(secondary_agents))
-
     actions_plotter = ActionStatePlotter(
         num_secondary_agents=len(secondary_agents),
-        num_tertiary_actions=num_der_total + 1,  # DER actions + 1 BESS action
+        num_tertiary_actions=num_der_total + num_bess_total,  # DER actions + BESS actions
         num_tertiary_states=len(flat_state),
         num_secondary_states=len(state["secondary"][0]),
     )
-    
+
     # Initialize data logger
     data_logger = EpisodeDataLogger("episode_data.csv")
 
@@ -150,14 +144,33 @@ def main(tertiary_action=None):
                 else:
                     for i, agent in enumerate(secondary_agents):
                         agent_state = sec_state[i]
-                        sec_action, sec_log_prob, sec_value = agent.select_action(agent_state)
+                        sec_action, sec_log_prob, values = agent.select_action(agent_state)
                         secondary_actions.append(sec_action)
                         secondary_log_probs.append(sec_log_prob)
 
-                new_sec_state, sec_rewards, sec_done, sec_info = dual_env.secondary_env.step(secondary_actions,
-                                                                                             dual_env.tertiary_env,
-                                                                                             ter_action.get("tie_lines",
-                                                                                                            None))
+                    new_sec_state, sec_rewards, sec_done, sec_info = dual_env.secondary_env.step(secondary_actions,
+                                                                                                 dual_env.tertiary_env,
+                                                                                                 ter_action.get(
+                                                                                                     "tie_lines",
+                                                                                                     None))
+
+                    # --- Critic sharing with spatial decay ---
+                    # Gather experiences for all agents
+                    experiences = []
+                    for i, agent in enumerate(secondary_agents):
+                        experiences.append({
+                            'state': sec_state[i],
+                            'log_prob': secondary_log_probs[i],
+                            'reward': sec_rewards[i],
+                            'next_state': sec_state[i],
+                            'done': sec_done
+                        })
+                    # For each agent, build batch from self and neighbors
+                    for i, agent in enumerate(secondary_agents):
+                        agent_indices = [i] + [j for j in range(len(secondary_agents)) if adjacency_matrix[i, j] == 1]
+                        batch = [experiences[j] for j in agent_indices]
+                        agent.learn_with_critic_sharing(batch, agent_indices)
+
                 sec_total_reward += np.mean(sec_rewards)
                 convergences.append(sec_info.get("is_converged", False))
 
@@ -181,15 +194,6 @@ def main(tertiary_action=None):
                             next_hidden=(next_h_states[i], next_c_states[i]),
                             context_vector=context_vectors[i]
                         )
-                else:
-                    for i, agent in enumerate(secondary_agents):
-                        agent.learn(
-                            state=sec_state[i],
-                            log_prob=secondary_log_probs[i],
-                            reward=sec_rewards[i],
-                            next_state=sec_state[i],
-                            done=sec_done
-                        )
 
                 if sec_done:
                     dual_env.secondary_env.time_step = 0
@@ -211,13 +215,16 @@ def main(tertiary_action=None):
             # Check for how much was borrowed from ext_grid.. if it is negative, it means we are selling
             # from the grid if positive, ext_grid is selling to the grid
             # Use temporal pricing for economic incentives
-            p_mw = sec_info.get("new_energy", None)
+            if not sec_info.get("is_converged", False):
+                p_mw = 100
+            else:
+                p_mw = sec_info.get("new_energy", None)
             if p_mw is not None:
                 # Get current temporal prices
                 current_prices = config.get_temporal_prices(time_step)
                 current_buy_price = current_prices["buy_price"]
                 current_sell_price = current_prices["sell_price"]
-                
+
                 if p_mw > 0:
                     # We are selling to the grid - reward based on current sell price
                     overall_reward -= current_buy_price * p_mw
@@ -240,6 +247,7 @@ def main(tertiary_action=None):
                 secondary_env=dual_env.secondary_env,
                 secondary_rewards=sec_rewards,
                 overall_reward=overall_reward,
+                steps_secondary_run=steps_secondary_run,
                 config=config
             )
 
@@ -268,21 +276,10 @@ def main(tertiary_action=None):
 
         # End episode and export data to CSV
         data_logger.end_episode()
-        
-        # Get episode summary
-        episode_summary = data_logger.get_episode_summary(ep + 1)
-        if episode_summary:
-            print(f"Episode {ep + 1} Summary:")
-            print(f"  Avg BESS SOC: {episode_summary['avg_bess_soc']:.3f}")
-            print(f"  BESS SOC Range: {episode_summary['min_bess_soc']:.3f} - {episode_summary['max_bess_soc']:.3f}")
-            print(f"  Total DER Generation: {episode_summary['total_der_generation']:.2f} MWh")
-            print(f"  Total Load: {episode_summary['total_load']:.2f} MWh")
-            print(f"  Avg Grid Power: {episode_summary['avg_grid_power']:.2f} MW")
-            print(f"  Total Overall Reward: {episode_summary['total_overall_reward']:.2f}")
-        
+
         # Update plots
-        actions_plotter.update(ep + 1, ter_action, secondary_actions, aggregated_ter_state, sec_state)
-        plotter.update(ep + 1, episode_reward, secondary_episode_rewards, secondary_episode_voltage_violations)
+        # actions_plotter.update(ep + 1, ter_action, secondary_actions, aggregated_ter_state, sec_state)
+        # plotter.update(ep + 1, episode_reward, secondary_episode_rewards, secondary_episode_voltage_violations)
 
         # Save models periodically
         save_models(tertiary_agent, secondary_agents, ep + 1)

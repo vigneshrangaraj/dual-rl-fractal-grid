@@ -13,9 +13,9 @@ class Helper:
           {
              "microgrids": [
                 {
-                  "bess_soc": float,          # Battery SOC as a fraction
+                  "bess_soc": [float, ...],          # List of BESS SOCs as fractions
                   "load": float,              # Total load (MW)
-                  "grid_power": float,        # Net grid power (MW) -- computed via power balance
+                  "grid_power": float,        # Net grid power (MW)
                   "der_generation": float,    # Total DER generation (MW)
                   "measured_voltage": float   # Voltage at the storage bus (pu)
                 },
@@ -29,23 +29,22 @@ class Helper:
         """
         import numpy as np
         import torch
-
         features = []
+        num_bess_total = getattr(config, "num_bess_total", 1)
         # Process each microgrid state.
         microgrids = state_dict.get("microgrids", [])
         for mg in microgrids:
-            bess_soc = mg.get("bess_soc", 0.0)
+            # BESS SOCs as a list
+            bess_socs = mg.get("bess_soc", [0.0] * num_bess_total)
+            features.extend(list(bess_socs))
             load = mg.get("total_load", 0.0)
             grid_power = mg.get("grid_power", 0.0)
             der_generation = mg.get("der_generation", 0.0)
             measured_voltage = mg.get("measured_voltage", 0.0)
-            # Concatenate the five values in order.
-            features.extend([bess_soc, load, grid_power, der_generation, measured_voltage])
-
+            features.extend([load, grid_power, der_generation, measured_voltage])
         # Append the global timestep.
         timestep = state_dict.get("timestep", 0)
         features.append(timestep)
-
         flat_state = np.array(features, dtype=np.float32)
         return torch.tensor(flat_state)
 
@@ -53,20 +52,30 @@ class Helper:
     def add_to_aggregated_state(aggregated_state, state_dict):
         """
         Adds the microgrid states from state_dict to aggregated_state.
+        Handles bess_soc as a list and averages elementwise.
         """
         keys = ["bess_soc", "total_load", "grid_power", "der_generation", "measured_voltage"]
         microgrids = state_dict.get("microgrids", [])
-        for mg in microgrids:
+        for mg_idx, mg in enumerate(microgrids):
             agg_microgrids = aggregated_state.get("microgrids", [])
-            for agg_mg in agg_microgrids:
-                for i in range(len(keys)):
-                    if (keys[i] == "bess_soc"):
-                        this_bess_soc = mg.get(keys[i], 0.0) + agg_mg.get(keys[i], 0.0)
-                        agg_mg[keys[i]] += this_bess_soc / 2
-                    else:
-                        agg_mg[keys[i]] += mg.get(keys[i], 0.0)
-
-        # Append the global timestep
+            if mg_idx >= len(agg_microgrids):
+                agg_microgrids.append({k: 0.0 for k in keys})
+            agg_mg = agg_microgrids[mg_idx]
+            for k in keys:
+                if k == "bess_soc":
+                    # Both should be lists
+                    bess_soc_new = mg.get("bess_soc", [])
+                    bess_soc_agg = agg_mg.get("bess_soc", [0.0] * len(bess_soc_new))
+                    # Elementwise average
+                    if len(bess_soc_new) != len(bess_soc_agg):
+                        # If lengths mismatch, pad with zeros
+                        max_len = max(len(bess_soc_new), len(bess_soc_agg))
+                        bess_soc_new = list(bess_soc_new) + [0.0] * (max_len - len(bess_soc_new))
+                        bess_soc_agg = list(bess_soc_agg) + [0.0] * (max_len - len(bess_soc_agg))
+                    agg_mg["bess_soc"] = [ (b + n) / 2.0 for b, n in zip(bess_soc_agg, bess_soc_new) ]
+                else:
+                    agg_mg[k] += mg.get(k, 0.0)
+            agg_microgrids[mg_idx] = agg_mg
         aggregated_state["timestep"] = state_dict.get("timestep", 0)
 
     @staticmethod
@@ -77,7 +86,7 @@ class Helper:
             "microgrids": [
                 {
                   "der_actions": [float, ...],  # Configurable number of DER actions
-                  "battery_operation": float,
+                  "battery_operation": [float, ...], # List of BESS actions
                 },
                 ...  (for each microgrid)
             ],
@@ -86,25 +95,22 @@ class Helper:
                 ...  (for each tie line)
             ]
           }
-
         Returns:
           A numpy array representing the flattened action vector.
         """
         action_vector = []
         microgrids = action_dict.get("microgrids", [])
         num_der_total = getattr(config, "num_der_total", 4)
+        num_bess_total = getattr(config, "num_bess_total", 1)
         for mg in microgrids:
             der_actions = mg.get("der_actions", [0.0] * num_der_total)
-            battery_operation = mg.get("battery_operation", 0.0)
+            battery_operations = mg.get("battery_operation", [0.0] * num_bess_total)
             action_vector.extend(der_actions)  # Add DER actions
-            action_vector.append(battery_operation)  # Add 1 BESS action
-
+            action_vector.extend(battery_operations)  # Add all BESS actions
         tie_lines = action_dict.get("tie_lines", [])
         for tie_line in tie_lines:
             value = tie_line[2]
             action_vector.append(value)
-
-        # Convert to numpy array
         action_vector = np.array(action_vector, dtype=np.float32)
         return action_vector
 
@@ -114,46 +120,32 @@ class Helper:
           A dict with keys:
             - "microgrids": list of dicts with keys:
                 - "der_actions": list of configurable floats (one for each DER)
-                - "battery_operation": float
+                - "battery_operation": list of floats (one for each BESS)
             - "tie_lines": list of tuples (from, to, value)
         """
-        # If action_vector is a torch tensor, move to CPU and convert to numpy.
         if torch.is_tensor(action_vector):
             action_vector = action_vector.detach().cpu().numpy()
-
         num_microgrids = getattr(config, "num_microgrids", 1)
         num_der_total = getattr(config, "num_der_total", 4)
-        # for each microgrid, we have (num_der_total + 1) actions: DER actions + 1 battery operation
-        # and the rest are tie lines
+        num_bess_total = getattr(config, "num_bess_total", 1)
         microgrid_actions = []
-
+        offset = 0
         for i in range(num_microgrids):
-            # Extract DER actions
-            der_actions = []
-            for j in range(num_der_total):
-                der_actions.append(action_vector[i * (num_der_total + 1) + j])
-            battery_operation = action_vector[i * (num_der_total + 1) + num_der_total]
+            der_actions = list(action_vector[offset:offset + num_der_total])
+            offset += num_der_total
+            battery_operations = list(action_vector[offset:offset + num_bess_total])
+            offset += num_bess_total
             microgrid_actions.append({
                 "der_actions": der_actions,
-                "battery_operation": battery_operation
+                "battery_operation": battery_operations
             })
-
-        # The rest of the action vector is for tie lines
-        # switch set is a set of switches formatted like "S_0_to_1"
-        # for the tielines we want something like (0, 1, 1) or (0, 1, 0)
-        # where 1 means closed and 0 means open
         tie_lines = []
-        k = 0
-        for j in switch_set:
-            # Extract the microgrid indices from the switch name
-            indices = j.split("_")
+        for j, switch in enumerate(switch_set):
+            indices = switch.split("_")
             from_mg = int(indices[1])
             to_mg = int(indices[3])
-            # The value is either 0 or 1
-            value = action_vector[(num_microgrids * (num_der_total + 1)) + k]
+            value = action_vector[offset + j]
             tie_lines.append((from_mg, to_mg, value))
-            k += 1
-
         return {
             "microgrids": microgrid_actions,
             "tie_lines": tie_lines

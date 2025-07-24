@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.distributions as D
+import numpy as np
 
 
 class DiscreteActorCriticNetwork(nn.Module):
@@ -75,7 +76,7 @@ class DiscreteActorCriticNetwork(nn.Module):
 
 
 class IA3CAgent:
-    def __init__(self, config, agent_id=0, microgrid_id=0, inverter_id=0):
+    def __init__(self, config, agent_id=0, microgrid_id=0, inverter_id=0, adjacency_matrix=None):
         self.agent_id = agent_id
         self.microgrid_id = microgrid_id
         self.inverter_id = inverter_id
@@ -89,9 +90,109 @@ class IA3CAgent:
         self.value_loss_coef = getattr(config, "value_loss_coef", 0.5)
         self.v_min = 1.00
         self.v_max = 1.14
+        self.adjacency_matrix = adjacency_matrix
+        self.spatial_decay_alpha = getattr(config, "spatial_decay_alpha", 1.0)  # Decay rate for spatial weighting
 
         self.network = DiscreteActorCriticNetwork(self.state_dim, self.action_dim, self.hidden_dim, use_lstm=config.use_lstm).to(self.device)
         self.optimizer = optim.Adam(self.network.parameters(), lr=self.lr)
+
+    def compute_spatial_weights(self, agent_indices):
+        """
+        Compute spatial weights for critic sharing based on adjacency matrix and exponential decay.
+        Args:
+            agent_indices: List of agent indices (including self and neighbors)
+        Returns:
+            np.ndarray of normalized weights
+        """
+        if self.adjacency_matrix is None:
+            # No sharing if no adjacency matrix
+            weights = np.zeros(len(agent_indices))
+            weights[0] = 1.0  # Only self
+            return weights
+        n = self.adjacency_matrix.shape[0]
+        # Compute shortest path distances using BFS
+        def shortest_path_length(start, end):
+            if start == end:
+                return 0
+            visited = [False] * n
+            queue = [(start, 0)]
+            visited[start] = True
+            while queue:
+                current, dist = queue.pop(0)
+                for neighbor in range(n):
+                    if self.adjacency_matrix[current, neighbor] and not visited[neighbor]:
+                        if neighbor == end:
+                            return dist + 1
+                        visited[neighbor] = True
+                        queue.append((neighbor, dist + 1))
+            return np.inf  # Not connected
+        dists = [shortest_path_length(self.agent_id, idx) for idx in agent_indices]
+        # Exponential decay
+        weights = np.exp(-self.spatial_decay_alpha * np.array(dists))
+        weights = weights / np.sum(weights) if np.sum(weights) > 0 else np.ones_like(weights) / len(weights)
+        return weights
+
+    def learn_with_critic_sharing(self, batch, agent_indices, hidden_batch=None, next_hidden_batch=None, context_batch=None):
+        """
+        Critic sharing with spatial decay. Each batch entry is from a neighbor (including self).
+        Args:
+            batch: List of dicts with keys: state, log_prob, reward, next_state, done
+            agent_indices: List of agent indices corresponding to batch entries
+            hidden_batch: List of hidden states for each entry (if LSTM)
+            next_hidden_batch: List of next hidden states for each entry (if LSTM)
+            context_batch: List of context vectors for each entry (if LSTM)
+        """
+        weights = self.compute_spatial_weights(agent_indices)
+        # Convert weights to torch tensor on the correct device
+        weights = torch.tensor(weights, dtype=torch.float32, device=self.device)
+        total_loss = None
+        for i, entry in enumerate(batch):
+            is_self = (agent_indices[i] == self.agent_id)
+            state = entry['state']
+            log_prob = entry['log_prob']
+            reward = entry['reward']
+            next_state = entry['next_state']
+            done = entry['done']
+            hidden = hidden_batch[i] if hidden_batch is not None else None
+            next_hidden = next_hidden_batch[i] if next_hidden_batch is not None else None
+            context_vector = context_batch[i] if context_batch is not None else None
+            if self.network.use_lstm:
+                state_tensor = torch.tensor(
+                    [[[state["voltage"], state["i_d"], state["i_q"], state["delta"]]]],
+                    dtype=torch.float32
+                ).to(self.device)
+                next_state_tensor = torch.tensor(
+                    [[[next_state["voltage"], next_state["i_d"], next_state["i_q"], next_state["delta"]]]],
+                    dtype=torch.float32
+                ).to(self.device)
+                context_vector = context_vector.view(1, -1).to(self.device)
+                logits, (h_n, c_n), value = self.network(state_tensor, hidden, context_vector)
+                next_logits, (next_h_n, next_c_n), next_value = self.network(next_state_tensor, next_hidden, context_vector)
+            else:
+                state_vector = torch.tensor([state["voltage"], state["i_d"], state["i_q"], state["delta"]], dtype=torch.float32).to(self.device)
+                next_state_vector = torch.tensor([next_state["voltage"], next_state["i_d"], next_state["i_q"], next_state["delta"]], dtype=torch.float32).to(self.device)
+                logits, value = self.network(state_vector)
+                _, next_value = self.network(next_state_vector)
+            target = reward + self.gamma * next_value * (1 - int(done))
+            advantage = target - value
+            # Detach log_prob for neighbor experiences
+            if not is_self:
+                log_prob = log_prob.detach()
+                # If you use value, next_value, etc. in actor_loss, detach them as well
+                # advantage = advantage.detach()  # Only if you use it in actor_loss for neighbors
+            actor_loss = -log_prob * advantage.detach()
+            critic_loss = advantage.pow(2)
+            entropy_loss = -D.Categorical(logits=logits).entropy().mean()
+            entry_loss = actor_loss + self.value_loss_coef * critic_loss + self.entropy_coef * entropy_loss
+            weighted_loss = weights[i] * entry_loss
+            if total_loss is None:
+                total_loss = weighted_loss
+            else:
+                total_loss = total_loss + weighted_loss
+        self.optimizer.zero_grad()
+        total_loss.backward()
+        self.optimizer.step()
+        return total_loss.item()
 
     def select_action(self, state, hidden=None, context_vector=None):
         if self.network.use_lstm:

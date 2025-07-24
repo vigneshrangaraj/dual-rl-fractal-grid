@@ -1,18 +1,28 @@
 import pandapower as pp
 
 class der_4():
-    def __init__(self, bess_bus_id=6):
+    NUM_DER_TOTAL = 4  # Default, can be overridden
+    NUM_BESS_TOTAL = 1  # Default, can be overridden
+    def __init__(self, bess_bus_ids=None, num_der_total=None, num_bess_total=None):
         """
-        :param bess_bus_id: Integer index for MV bus (must be 4–8) where BESS should be placed
+        :param bess_bus_ids: List of bus indices for BESS placement
+        :param num_der_total: Total number of DERs (solar + wind)
+        :param num_bess_total: Total number of BESS units
         """
         self.net = pp.create_empty_network()
-        self.storage_idx = None
+        self.storage_idxs = []
         self.wind_buses = [6, 7]
         self.combine_bus_inv_idx = [4, 5, 6, 7]
         self.num_buses = 5
         self.num_secondary_agents = 4
         self.solar_buses = [4, 5]
-        self.bess_bus_id = bess_bus_id  # Store desired BESS location
+        if num_der_total is not None:
+            der_4.NUM_DER_TOTAL = num_der_total
+        if num_bess_total is not None:
+            der_4.NUM_BESS_TOTAL = num_bess_total
+        self.num_der_total = der_4.NUM_DER_TOTAL
+        self.num_bess_total = der_4.NUM_BESS_TOTAL
+        self.bess_bus_ids = bess_bus_ids if bess_bus_ids is not None else [6]
         self.build_network()
 
     def get_network(self):
@@ -54,25 +64,29 @@ class der_4():
         pp.create_load(net, bus3, p_mw=4, q_mvar=4, scaling=1.0)
 
         # Generators (DERs)
-        pp.create_gen(net, bus5, p_mw=20, max_q_mvar=3, name="Solar_4", min_q_mvar=-3, vm_pu=1.03)
-        pp.create_gen(net, bus6, p_mw=20, max_q_mvar=3, name="Solar_5", min_q_mvar=-3, vm_pu=1.03)
-        pp.create_gen(net, bus7, p_mw=50, max_q_mvar=3, name="Wind_6", min_q_mvar=-3, vm_pu=1.03)
-        pp.create_gen(net, bus8, p_mw=50, max_q_mvar=3, name="Wind_7", min_q_mvar=-3, vm_pu=1.03)
+        pp.create_gen(net, bus5, p_mw=20, max_q_mvar=3, name="Solar_4", min_q_mvar=-4, vm_pu=1.03)
+        pp.create_gen(net, bus6, p_mw=20, max_q_mvar=3, name="Solar_5", min_q_mvar=-4, vm_pu=1.03)
+        pp.create_gen(net, bus7, p_mw=50, max_q_mvar=3, name="Wind_6", min_q_mvar=-4, vm_pu=1.03)
+        pp.create_gen(net, bus8, p_mw=50, max_q_mvar=3, name="Wind_7", min_q_mvar=-4, vm_pu=1.03)
 
-        # Dynamically place BESS at the requested MV bus (bus4 to bus8 → index 3 to 7)
-        assert 4 <= self.bess_bus_id <= 8, "BESS bus must be in range 4 to 8"
-        bess_bus = buses[self.bess_bus_id - 1]
-        self.storage_idx = pp.create_storage(
-            net, bus=bess_bus, p_mw=20, max_e_mwh=50.0, min_e_mwh=15,
-            soc_percent=50, name="storage", max_p_mw=50, min_p_mw=-50,
-            initial_e_mwh=0.5, q_mvar=0.2
-        )
+        # Dynamically place multiple BESS units at requested MV buses
+        self.storage_idxs = []
+        for i in range(self.num_bess_total):
+            bus_id = self.bess_bus_ids[i] if i < len(self.bess_bus_ids) else self.bess_bus_ids[0]
+            assert 4 <= bus_id <= 8, "BESS bus must be in range 4 to 8"
+            bess_bus = net.bus.index[bus_id - 1]
+            storage_idx = pp.create_storage(
+                net, bus=bess_bus, p_mw=20, max_e_mwh=50.0, min_e_mwh=15,
+                soc_percent=50, name=f"storage_{i}", max_p_mw=50, min_p_mw=-50,
+                initial_e_mwh=0.5, q_mvar=0.2
+            )
+            self.storage_idxs.append(storage_idx)
 
         # Shunt
         pp.create_shunt(net, bus3, q_mvar=-0.96, p_mw=0, name='Shunt')
 
-    def get_storage_idx(self):
-        return self.storage_idx
+    def get_storage_idxs(self):
+        return self.storage_idxs
 
     def get_tie_switch(self, net):
         bus1 = pp.create_bus(self.net, vn_kv=110, name="Tie Bus 1")

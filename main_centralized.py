@@ -65,21 +65,17 @@ def main():
     # Calculate combined action dimension
     num_microgrids = getattr(config, "num_microgrids", 1)
     num_der_total = getattr(config, "num_der_total", 4)
+    num_bess_total = getattr(config, "num_bess_total", 1)
     num_secondary_agents = len(secondary_states)
-    
-    # Tertiary actions: DER actions + BESS action + tie line actions
-    tertiary_action_dim = (num_der_total + 1) * num_microgrids + dual_env.tertiary_env.switches
-    
+    # Tertiary actions: DER actions + BESS actions + tie line actions
+    tertiary_action_dim = (num_der_total + num_bess_total) * num_microgrids + dual_env.tertiary_env.switches
     # Secondary actions: reactive power for each agent
     secondary_action_dim = num_secondary_agents
-    
     combined_action_dim = tertiary_action_dim + secondary_action_dim
-    
     print(f"Combined state dimension: {combined_state_dim}")
     print(f"Combined action dimension: {combined_action_dim}")
     print(f"Tertiary state dim: {ter_state_dim}, Secondary state dim: {sec_state_dim}")
     print(f"Tertiary action dim: {tertiary_action_dim}, Secondary action dim: {secondary_action_dim}")
-
     # Instantiate the centralized agent based on config
     if config.use_centralized_sac:
         centralized_agent = CentralizedSACAgent(combined_state_dim, combined_action_dim, config)

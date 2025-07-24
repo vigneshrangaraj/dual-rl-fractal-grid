@@ -54,19 +54,22 @@ class Config:
     load_disturbance_percent = 0.1  # ±10% variation
     load_cost_factor = 0.05  # Cost per kW of load
 
-    # DER Configuration
-    num_der_solar = 2  # Number of solar DERs
-    num_der_wind = 2   # Number of wind DERs
-    num_der_total = num_der_solar + num_der_wind  # Total number of DERs (4 by default)
+    # DER/BESS configuration
+    num_der_total = 11  # Default, can be overridden
+    num_bess_total = 5  # Default, can be overridden
+    num_loads = 29
+
+    num_der_solar = 4
+    num_der_wind = 7
     
     # Solar parameters
     num_solar = 1
-    solar_base_output = 10  # MW
+    solar_base_output = 250  # MW
     solar_variability = 0.1  # ±10% variability
 
     # Wind parameters
     num_wind = 1
-    wind_base_output = 30  # MW
+    wind_base_output = 500  # MW
     wind_variability = 0.2  # ±20% variability
 
     beta_convergence = 0.1
