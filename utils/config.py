@@ -55,21 +55,21 @@ class Config:
     load_cost_factor = 0.05  # Cost per kW of load
 
     # DER/BESS configuration
-    num_der_total = 11  # Default, can be overridden
+    num_der_total = 20  # Default, can be overridden
     num_bess_total = 5  # Default, can be overridden
-    num_loads = 29
+    num_loads = 16
 
     num_der_solar = 4
     num_der_wind = 7
     
     # Solar parameters
     num_solar = 1
-    solar_base_output = 250  # MW
+    solar_base_output = 8  # MW
     solar_variability = 0.1  # ±10% variability
 
     # Wind parameters
     num_wind = 1
-    wind_base_output = 500  # MW
+    wind_base_output = 10  # MW
     wind_variability = 0.2  # ±20% variability
 
     beta_convergence = 0.1
@@ -81,7 +81,7 @@ class Config:
     sell_ext_grid = 80  # Weight for external grid revenue
     
     # Time-varying price parameters (24-hour cycle)
-    base_buy_price = 15.0  # Base buying price per MWh
+    base_buy_price = 5.0  # Base buying price per MWh
     base_sell_price = 3.0  # Base selling price per MWh
     price_volatility = 0.3  # Price variation factor (30%)
     
@@ -130,6 +130,10 @@ class Config:
     comm_threshold = 5.0  # Distance threshold for communication (units consistent with positions)
     # Positions for DER agents (if None, secondary_env will generate random positions)
     positions = None
+    
+    # Critic sharing settings for IA3C agents
+    enable_critic_sharing = False  # Enable/disable critic sharing for ablation study
+    spatial_decay_alpha = 0.5  # Decay factor for spatial critic sharing (0.5 = 50% decay per hop)
 
     # -------------------------------
     # IA3C Agent (Secondary) Settings

@@ -415,9 +415,9 @@ class FractalGridEnv:
         if time_step in self.peak_hours:
             temporal_multiplier = 1  # increase demand during peak to trigger BESS discharge
         elif time_step in self.off_peak_hours:
-            temporal_multiplier = 0.7  # reduce demand to allow BESS charging
+            temporal_multiplier = 0.4  # reduce demand to allow BESS charging
         else:
-            temporal_multiplier = 0.9  # neutral during mid-day
+            temporal_multiplier = 0.6  # neutral during mid-day
 
         load_profile = drift * oscillation * base_load * (1 + random_noise) * temporal_multiplier
         self.net.load.loc[buses, "p_mw"] = load_profile

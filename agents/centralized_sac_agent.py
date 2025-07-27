@@ -194,10 +194,11 @@ class CentralizedSACAgent:
             action_vector = action_vector.detach().cpu().numpy()
 
         num_microgrids = getattr(self.config, "num_microgrids", 1)
+        num_bess_total = getattr(self.config, "num_bess_total", 4)
         num_der_total = getattr(self.config, "num_der_total", 4)
         
         # Calculate tertiary action dimension
-        tertiary_action_dim = (num_der_total + 1) * num_microgrids + len(switch_set)
+        tertiary_action_dim = ( num_der_total + num_bess_total )* num_microgrids + len(switch_set)
         
         # Split action vector
         tertiary_action_vec = action_vector[:tertiary_action_dim]

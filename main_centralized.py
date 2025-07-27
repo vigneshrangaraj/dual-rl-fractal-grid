@@ -209,15 +209,13 @@ def main():
         save_centralized_model(centralized_agent, ep + 1)
 
         # Update and save plots
-        plotter.update_plots(50)
-        plotter.save_plot("centralized_rewards_episode.png")
+        #plotter.update_plots(50)
+        #plotter.save_plot("centralized_rewards_episode.png")
         
         # Print episode summary
         print(f"Episode {ep + 1} completed:")
         print(f"  Total reward: {episode_reward:.4f}")
         print(f"  Steps: {time_step}")
-        print(f"  Average BESS SOC: {np.mean(bess_soc_for_day):.4f}")
-        print(f"  Final BESS SOC: {bess_soc_for_day[-1]:.4f}")
         print("=" * 50)
 
     # Save final model

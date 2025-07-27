@@ -91,7 +91,7 @@ class IA3CAgent:
         self.v_min = 1.00
         self.v_max = 1.14
         self.adjacency_matrix = adjacency_matrix
-        self.spatial_decay_alpha = getattr(config, "spatial_decay_alpha", 1.0)  # Decay rate for spatial weighting
+        self.config = config  # Store config reference for accessing parameters
 
         self.network = DiscreteActorCriticNetwork(self.state_dim, self.action_dim, self.hidden_dim, use_lstm=config.use_lstm).to(self.device)
         self.optimizer = optim.Adam(self.network.parameters(), lr=self.lr)
@@ -127,8 +127,9 @@ class IA3CAgent:
                         queue.append((neighbor, dist + 1))
             return np.inf  # Not connected
         dists = [shortest_path_length(self.agent_id, idx) for idx in agent_indices]
-        # Exponential decay
-        weights = np.exp(-self.spatial_decay_alpha * np.array(dists))
+        # Exponential decay using config parameter
+        spatial_decay_alpha = getattr(self.config, 'spatial_decay_alpha', 0.5)
+        weights = np.exp(-spatial_decay_alpha * np.array(dists))
         weights = weights / np.sum(weights) if np.sum(weights) > 0 else np.ones_like(weights) / len(weights)
         return weights
 
@@ -142,6 +143,31 @@ class IA3CAgent:
             next_hidden_batch: List of next hidden states for each entry (if LSTM)
             context_batch: List of context vectors for each entry (if LSTM)
         """
+        # Check if critic sharing is enabled
+        if not getattr(self.config, 'enable_critic_sharing', True):
+            # If critic sharing is disabled, only use the agent's own experience
+            own_experience = None
+            for i, entry in enumerate(batch):
+                if agent_indices[i] == self.agent_id:
+                    own_experience = entry
+                    break
+            
+            if own_experience is None:
+                return 0.0  # No own experience found
+            
+            # Use regular learn method with own experience only
+            return self.learn(
+                own_experience['state'],
+                own_experience['log_prob'],
+                own_experience['reward'],
+                own_experience['next_state'],
+                own_experience['done'],
+                hidden_batch[0] if hidden_batch is not None else None,
+                next_hidden_batch[0] if next_hidden_batch is not None else None,
+                context_batch[0] if context_batch is not None else None
+            )
+        
+        # Critic sharing is enabled - proceed with original logic
         weights = self.compute_spatial_weights(agent_indices)
         # Convert weights to torch tensor on the correct device
         weights = torch.tensor(weights, dtype=torch.float32, device=self.device)
